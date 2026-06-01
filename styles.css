@@ -1,0 +1,378 @@
+/* styles.css for Novel Chapter Plugin */
+
+/* Overall View Container */
+.novel-chapter-view-container {
+	padding: 15px 20px;
+	height: 100%;
+	box-sizing: border-box;
+	overflow-y: auto;
+	display: flex;
+	flex-direction: column;
+}
+
+/* ====== Controls ====== */
+/* Controls Area */
+.novel-chapter-controls {
+	margin-bottom: 20px;
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+}
+.novel-chapter-controls-line {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	width: 100%;
+}
+
+/* Project Selector, Search Input and Filter Select */
+.novel-chapter-controls select.novel-project-selector,
+input[type="text"].novel-chapter-search-input,
+.novel-chapter-filter-select {
+	font-size: var(--font-ui-normal);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-m);
+	background-color: var(--background-primary);
+	min-width: 180px;
+}
+input[type="text"].novel-chapter-search-input,
+.novel-chapter-controls select.novel-project-selector {
+	flex-grow: 1;
+}
+.novel-chapter-filter-select {
+	flex-shrink: 0;
+}
+input[type="text"].novel-chapter-search-input {
+	color: var(--text-faint);
+}
+
+/* ====== Table ====== */
+/* Table Container */
+.novel-chapter-table-container {
+	flex-grow: 1;
+	overflow-y: auto;
+	background-color: var(--background-secondary);
+}
+
+/* Main Chapter Table */
+.novel-chapter-table {
+	width: 100%;
+	border-collapse: collapse; /* Keep them separate to avoid invisible borders when scrolling */
+	font-size: var(--font-text-size);
+	table-layout: fixed;
+}
+
+/* Cells */
+.novel-chapter-table th,
+.novel-chapter-table td {
+	padding: 12px 15px;
+	text-align: left;
+	border-bottom: 1px solid var(--background-modifier-border);
+	vertical-align: middle;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.novel-chapter-table th {
+	font-weight: var(--h1-weight);
+}
+
+/* Column Widths */
+/* Chapter Name */
+.novel-chapter-table th:first-child {
+	width: 50%;
+}
+/* Actions */
+.novel-chapter-table th.actions-header {
+	width: 120px;
+	text-align: center;
+}
+
+/* Property Dropdown within table cells */
+.novel-chapter-table td select {
+	padding: 6px 8px;
+	font-size: var(--font-ui-small);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-s);
+	background-color: var(--background-secondary);
+	width: 100%;
+	box-sizing: border-box;
+}
+
+/* Placeholder Messages */
+.novel-chapter-table-container > div:only-child {
+	padding: 30px 20px;
+	text-align: center;
+	color: var(--text-muted);
+	font-style: italic;
+	border: 1px dashed var(--background-modifier-border);
+	border-radius: var(--radius-m);
+}
+
+/* Chapter Links */
+.novel-chapter-table td a {
+	color: var(--text-normal);
+	text-decoration-line: none;
+}
+.novel-chapter-table td a:hover {
+	color: var(--link-color-hover);
+	text-decoration-line: var(--link-decoration-hover);
+}
+
+/* Allows Chapter Names and Folders to wrap */
+.novel-chapter-table td:first-child {
+	white-space: normal;
+	word-break: break-word; /* Helps with long names without spaces */
+	overflow: visible; /* Allow content to be visible */
+	text-overflow: clip; /* Stop the "..." */
+}
+
+/*Folder Groups */
+
+/* Group Header Row */
+.novel-chapter-table tr.chapter-group-header {
+	background-color: var(--background-secondary);
+	font-weight: var(--h1-weight);
+	cursor: pointer;
+	position: sticky;
+	top: 0;
+	z-index: 1; /* Keep it on top of other elements when scrolling */
+}
+
+.novel-chapter-table tr.chapter-group-header td {
+	background-color: var(
+		--background-secondary
+	); /* Ensure it has a background to hide content */
+}
+
+/* .novel-chapter-table tr.chapter-group-header:not(:has(:last-child:)) {
+    color: red;
+} */
+
+.novel-chapter-table tr.chapter-group-header:hover {
+	background-color: var(--background-secondary-alt);
+}
+
+.novel-chapter-table tr.chapter-group-header td {
+	border-bottom: 1px solid var(--background-modifier-border-hover);
+}
+
+/* Toggle Icon in the Header */
+.chapter-group-header .group-toggle-icon {
+	display: inline-block;
+	vertical-align: middle;
+	margin-right: 4px;
+}
+
+/* ===== Modal Styling ===== */
+.modal .modal-text-input {
+	width: 100%;
+	box-sizing: border-box; /* Important for width calculation with padding/border */
+}
+
+.modal-folder-select-container {
+	margin-top: 5px;
+}
+
+/* ====== Tabs ====== */
+.novel-view-tabs {
+	display: flex;
+	gap: 10px;
+	margin-bottom: 15px;
+	flex-shrink: 0;
+}
+
+.novel-view-tabs button {
+	flex-grow: 1; /* Make tab buttons equal width */
+}
+
+/* Wrapper for individual tab content */
+.novel-tab-content {
+	display: flex;
+	flex-direction: column;
+	flex-grow: 1;
+	overflow: hidden; /* Let inner containers handle their own scrolling */
+}
+
+/* ====== Fragments Tab ====== */
+.fragments-selector-container {
+	margin-bottom: 15px;
+	flex-shrink: 0;
+}
+
+/* Reusing your project-selector aesthetics for the fragments tab */
+.fragments-selector-container select {
+	width: 100%;
+	font-size: var(--font-ui-normal);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-m);
+	background-color: var(--background-primary);
+	padding: 6px 8px;
+}
+
+/* The Continuous Feed Area */
+.fragments-feed-container {
+	flex-grow: 1;
+	overflow-y: auto;
+	margin-bottom: 15px;
+	background-color: var(--background-secondary);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-m);
+	padding: 15px;
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+}
+
+/* Reusing your dashed-border empty state for the empty feed */
+.fragments-feed-container > p.nav-empty-state-title {
+	padding: 30px 20px;
+	text-align: center;
+	color: var(--text-muted);
+	font-style: italic;
+	border: 1px dashed var(--background-modifier-border);
+	border-radius: var(--radius-m);
+	margin: 0;
+}
+
+/* The Bottom Creation Box */
+.fragments-create-container {
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+	flex-shrink: 0;
+}
+
+/* Match the input styles to your existing search input */
+.fragments-create-container input[type="text"],
+.fragments-create-container textarea {
+	width: 100%;
+	box-sizing: border-box;
+	font-size: var(--font-ui-normal);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-m);
+	background-color: var(--background-primary);
+	padding: 10px;
+	color: var(--text-normal);
+}
+
+.fragments-create-container textarea {
+	min-height: 150px;
+	resize: vertical;
+	font-family: var(--font-text);
+}
+
+/* ====== Settings UI ====== */
+.novel-project-input-stack {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	min-width: 350px;
+}
+
+.novel-project-input-stack input[type="text"] {
+	width: 100%;
+	box-sizing: border-box;
+}
+
+/* Individual Fragment Block */
+.fragment-block {
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-m);
+	padding: 12px;
+	background-color: var(--background-primary);
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+/* Fragment Header */
+.fragment-header {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	border-bottom: 1px solid var(--background-modifier-border);
+	padding-bottom: 8px;
+}
+
+.fragment-title {
+	margin: 0;
+	font-weight: var(--h4-weight);
+	color: var(--text-normal);
+}
+
+.fragment-actions {
+	display: flex;
+	gap: 6px;
+}
+
+.fragment-actions .clickable-icon {
+	background: transparent;
+	border: none;
+	box-shadow: none;
+	padding: 4px;
+	cursor: pointer;
+	color: var(--text-muted);
+}
+
+.fragment-actions .clickable-icon:hover {
+	color: var(--text-normal);
+	background-color: var(--background-modifier-hover);
+}
+
+/* Fragment Content */
+.fragment-content pre {
+	white-space: pre-wrap; /* Ensures line breaks wrap naturally */
+	word-wrap: break-word;
+	margin: 0;
+	font-family: var(--font-text);
+	color: var(--text-normal);
+    max-height: 300px; 
+    overflow: scroll;
+}
+
+/* Fragments Top Controls (Dropdown & Search) */
+.fragments-top-controls {
+	display: flex;
+	gap: 10px;
+	margin-bottom: 15px;
+	flex-shrink: 0;
+}
+
+.fragments-top-controls > div {
+	flex-grow: 1;
+}
+
+/* Ensure inputs/selects stretch to fill their containers */
+.fragments-top-controls select,
+.fragments-top-controls input {
+	width: 100%;
+	box-sizing: border-box;
+}
+
+/* Remove the old bottom margin from the selector wrapper since the parent handles it now */
+.fragments-selector-container {
+	margin-bottom: 0 !important;
+}
+
+/* Fragments Creation Header (Title & Button) */
+.fragments-create-header {
+	display: flex;
+	gap: 10px;
+	align-items: stretch; /* Ensures the button matches the height of the input */
+}
+
+/* Force the title input to take up all available horizontal space */
+.fragments-create-header input[type="text"] {
+	flex-grow: 1;
+}
+
+/* Ensure the button matches the height of the standard inputs */
+.fragments-create-header .novel-chapter-new-button {
+    height: auto;
+    margin: 0;
+}
+
+.novel-project-selector {
+    padding: 6px 8px;
+}

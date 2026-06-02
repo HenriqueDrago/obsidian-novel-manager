@@ -3,8 +3,8 @@
   "name": "Novel Manager",
   "version": "2.0.0",
   "minAppVersion": "1.12.7",
-  "description": "An obsidian plugin that adds a custom view for displaying novel chapters in a table format.",
-  "author": "8D",
+  "description": "Manage novel chapters and idea fragments in a separate view.",
+  "author": "8d",
   "main": "main.js",
-  "isDesktopOnly": true
+  "isDesktopOnly": false
 }

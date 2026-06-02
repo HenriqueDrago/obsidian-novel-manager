@@ -141,15 +141,10 @@ export class NovelChapterPluginSettingsTab extends PluginSettingTab {
 					.setValue(this.plugin.settings.showProperty)
 					.onChange(async (value) => {
 						this.plugin.settings.showProperty = value;
-						await this.plugin.saveSettings();
+						await this.plugin.saveSettings(); // Save settings (also refreshes the view)
 						this.renderPropertySettings(propertySettingsContainer); // Refresh the settings
-						this.plugin.refreshNovelChapterView(true); // Refresh the view
 					})
 			);
-		
-		// if(this.plugin.settings.showProperty) {
-		// 	 // For styling purposes
-		// }
 
 		const propertySettingsContainer = containerEl.createDiv({
 			cls: "property-settings-container",
@@ -194,8 +189,6 @@ export class NovelChapterPluginSettingsTab extends PluginSettingTab {
 
 	private renderPropertySettings(containerEl: HTMLElement): void {
 		containerEl.empty(); // Clear existing content
-
-		new Setting(containerEl);
 
 		// If the setting to show the property is toggled
 		if(this.plugin.settings.showProperty) {

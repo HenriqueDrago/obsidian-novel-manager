@@ -432,9 +432,11 @@ class NovelChapterView extends ItemView {
 		// Check the global setting: hide tabs if fragments are disabled
 		if (!this.plugin.settings.enableFragments) {
             this.activeTab = "chapters";
-            this.tabsContainer.hide(); // <-- The clean Obsidian API method
+            this.tabsContainer.hide();
             return;
-        }
+        } else {
+			this.tabsContainer.show();
+		}
 
 		const btnChapters = this.tabsContainer.createEl("button", {
 			text: "Chapters",
@@ -500,9 +502,6 @@ class NovelChapterView extends ItemView {
 		searchInput.addEventListener("input", (e) => {
 			debouncedFragSearch((e.target as HTMLInputElement).value);
 		});
-
-		// Initial load of the feed
-		await this.buildNotesFeed(feedContainer);
 
 		// Bottom: Creation Box
 		const createContainer = this.fragmentsTabContainer.createDiv({
@@ -611,6 +610,9 @@ class NovelChapterView extends ItemView {
 			},
 			{ capture: true },
 		);
+
+		// Initial load of the feed
+		await this.buildNotesFeed(feedContainer);
 	}
 
 	private async buildNotesFeed(feedContainer: HTMLElement) {

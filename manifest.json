@@ -1,10 +1,10 @@
 {
   "id": "obsidian-novel-chapter-list",
   "name": "Novel Manager",
-  "version": "2.0.1",
-  "minAppVersion": "1.12.7",
+  "version": "3.0.0",
+  "minAppVersion": "1.15.0",
   "description": "Manage novel chapters and idea fragments in a separate view.",
-  "author": "8d",
+  "author": "hdrago",
   "main": "main.js",
   "isDesktopOnly": false
 }

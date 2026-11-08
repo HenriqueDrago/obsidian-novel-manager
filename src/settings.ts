@@ -25,6 +25,7 @@ export interface NovelChapterPluginSettings {
 	otherGroupName: string; // Name for the "Other" group
 	excludeOtherFromCount: boolean; // Whether to exclude "Other" from total count
 	followActiveChapter: boolean; // Switch the view to the project of the file you open
+	dragToMove: boolean; // Drag chapter rows onto another group to move them (desktop)
 }
 
 // Define the default settings
@@ -47,6 +48,7 @@ export const DEFAULT_SETTINGS: NovelChapterPluginSettings = {
 	otherGroupName: "Other", // Default name for the "Other" group
 	excludeOtherFromCount: false, // Default to including "Other" in counts
 	followActiveChapter: false,
+	dragToMove: true,
 };
 
 // Settings plus internal state that isn't shown in the settings tab
@@ -85,6 +87,9 @@ export function normalizeSettings(
 	}
 	if (typeof settings.followActiveChapter !== "boolean") {
 		settings.followActiveChapter = false;
+	}
+	if (typeof settings.dragToMove !== "boolean") {
+		settings.dragToMove = true;
 	}
 	if (!FRAGMENT_SORTS.includes(settings.fragmentSort)) {
 		settings.fragmentSort = "newest";

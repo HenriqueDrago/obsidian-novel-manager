@@ -8,6 +8,7 @@ import {
 	MenuItem,
 	normalizePath,
 	Notice,
+	Platform,
 	setIcon,
 	SearchComponent,
 	TFile,
@@ -54,8 +55,13 @@ export class ChaptersTab {
 	private rowsByPath = new Map<string, HTMLTableRowElement>();
 	private groupHeaderByKey = new Map<string, HTMLTableRowElement>();
 	private groupKeyByPath = new Map<string, string>();
+	private rowsByGroupKey = new Map<string, HTMLTableRowElement[]>();
 	private scrolledToPath: string | null = null; // Last file scrolled to, so each file scrolls once
 	private theadObserver: ResizeObserver | null = null; // Keeps --novel-thead-height in sync
+
+	// Drag to move: the chapter being dragged and the group highlighted as the drop target
+	private draggedFile: TFile | null = null;
+	private dropTargetKey: string | null = null;
 
 	constructor(
 		private context: TabContext,
@@ -258,6 +264,9 @@ export class ChaptersTab {
 		this.rowsByPath.clear();
 		this.groupHeaderByKey.clear();
 		this.groupKeyByPath.clear();
+		this.rowsByGroupKey.clear();
+		this.draggedFile = null; // A redraw mid-drag drops the old rows
+		this.dropTargetKey = null;
 		this.theadObserver?.disconnect();
 		this.theadObserver = null;
 
@@ -424,12 +433,23 @@ export class ChaptersTab {
 		});
 		this.theadObserver.observe(thead);
 
+		// Drag to move (HTML drag-and-drop doesn't work in the mobile app)
+		const canDrag = this.plugin.settings.dragToMove && !Platform.isMobile;
+		if (canDrag) {
+			// Leaving the table clears the highlight (relatedTarget is where the pointer went)
+			table.addEventListener("dragleave", (ev) => {
+				const to = ev.relatedTarget;
+				if (!(to instanceof Node) || !table.contains(to)) this.setDropTarget(null);
+			});
+		}
+
 		// Render Table Body with grouped chapters
 		const tbody = table.createEl("tbody");
 		for (const group of groups) {
 			// Restore the collapsed state from before the re-render
 			const startCollapsed = this.collapsedGroups.has(group.key);
-			const groupRows: HTMLElement[] = []; // Rows of this group, toggled directly (no DOM IDs needed)
+			const groupRows: HTMLTableRowElement[] = []; // Rows of this group, toggled directly (no DOM IDs needed)
+			this.rowsByGroupKey.set(group.key, groupRows);
 
 			// Create a header row for each group
 			const groupHeaderRow = tbody.createEl("tr", {
@@ -473,6 +493,7 @@ export class ChaptersTab {
 				ev.preventDefault();
 				this.showGroupMenu(ev, group.key, currentNovelProject);
 			});
+			if (canDrag) this.attachDropTarget(groupHeaderRow, group.key, currentNovelProject);
 
 			// For each file in the group, create a row in the table
 			for (const file of group.files) {
@@ -488,6 +509,26 @@ export class ChaptersTab {
 					href: "#",
 					cls: "internal-link",
 				});
+
+				if (canDrag) {
+					row.draggable = true;
+					chapterLink.draggable = false; // Drag the row, not the link
+					row.addEventListener("dragstart", (ev) => {
+						this.draggedFile = file;
+						if (ev.dataTransfer) {
+							ev.dataTransfer.effectAllowed = "move";
+							ev.dataTransfer.setData("application/x-novel-chapter", file.path);
+						}
+						row.addClass("is-dragging");
+					});
+					// Fires after a drop, Escape, or dropping outside
+					row.addEventListener("dragend", () => {
+						row.removeClass("is-dragging");
+						this.draggedFile = null;
+						this.setDropTarget(null);
+					});
+					this.attachDropTarget(row, group.key, currentNovelProject);
+				}
 
 				// Open the chapter; Ctrl/Cmd-click opens it in a new tab
 				chapterLink.addEventListener("click", (ev) => {
@@ -665,6 +706,49 @@ export class ChaptersTab {
 		}
 
 		this.highlightActiveChapter(false); // No scrolling on plain refreshes
+	}
+
+	// Makes a group header or row accept dropped chapters, moving them into that group's folder
+	private attachDropTarget(el: HTMLElement, groupKey: string, project: NovelProject): void {
+		// Only another group accepts the drop (not accepting = the "not allowed" cursor)
+		const canDrop = () =>
+			this.draggedFile !== null &&
+			this.groupKeyByPath.get(this.draggedFile.path) !== groupKey;
+
+		el.addEventListener("dragover", (ev) => {
+			if (!canDrop()) {
+				this.setDropTarget(null);
+				return;
+			}
+			ev.preventDefault(); // Accept the drop
+			if (ev.dataTransfer) ev.dataTransfer.dropEffect = "move";
+			this.setDropTarget(groupKey);
+		});
+		el.addEventListener("drop", (ev) => {
+			const file = this.draggedFile;
+			if (!file || !canDrop()) return;
+			ev.preventDefault();
+			this.setDropTarget(null);
+			moveChapter(this.app, file, getGroupFolderPath(project, groupKey)).catch(
+				console.error,
+			);
+		});
+	}
+
+	// Highlights a group (header and rows) as the drop target; null clears it
+	private setDropTarget(key: string | null): void {
+		if (key === this.dropTargetKey) return; // dragover fires constantly
+		if (this.dropTargetKey !== null) {
+			this.groupHeaderByKey.get(this.dropTargetKey)?.removeClass("is-drop-target");
+			this.rowsByGroupKey
+				.get(this.dropTargetKey)
+				?.forEach((row) => row.removeClass("is-drop-target-row"));
+		}
+		this.dropTargetKey = key;
+		if (key !== null) {
+			this.groupHeaderByKey.get(key)?.addClass("is-drop-target");
+			this.rowsByGroupKey.get(key)?.forEach((row) => row.addClass("is-drop-target-row"));
+		}
 	}
 
 	// Right-click menu on a group header: new chapter here, rename folder, collapse others

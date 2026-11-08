@@ -104,6 +104,21 @@ export class NovelChapterPluginSettingsTab extends PluginSettingTab {
 					})
 			);
 
+		// Create setting for moving chapters by dragging them onto a group
+		new Setting(containerEl)
+			.setName("Drag chapters between folders")
+			.setDesc(
+				"Drag a chapter onto another group to move it there. Desktop only; the row menu's move option always works."
+			)
+			.addToggle((toggle) =>
+				toggle
+					.setValue(this.plugin.settings.dragToMove)
+					.onChange(async (value) => {
+						this.plugin.settings.dragToMove = value;
+						await this.plugin.saveSettings();
+					})
+			);
+
 		// ====== Property column ======
 		new Setting(containerEl).setName("Property column").setHeading();
 

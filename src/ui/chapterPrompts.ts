@@ -1,5 +1,5 @@
 // Chapter dialogs: ask the user, then call core/chapters
-import { App, Notice, TFile } from "obsidian";
+import { App, Notice, TFile, TFolder } from "obsidian";
 import { NovelChapterPluginSettings } from "../settings";
 import {
 	createChapter,
@@ -7,6 +7,7 @@ import {
 	getActiveChapterFolder,
 	getChapterFolderOptions,
 	renameChapter,
+	renameChapterFolder,
 } from "../core/chapters";
 import { ChapterNameModal } from "./ChapterNameModal";
 import { ConfirmationModal } from "./ConfirmationModal";
@@ -19,7 +20,7 @@ export async function promptAndRenameChapter(app: App, file: TFile): Promise<voi
 	// Create and open a modal to prompt the user for a new chapter name
 	new ChapterNameModal(
 		app,
-		"Rename Chapter",
+		"Rename chapter",
 		"Rename",
 		currentName,
 		(newName) => {
@@ -49,6 +50,7 @@ export async function promptAndCreateNewChapter(
 	app: App,
 	settings: NovelChapterPluginSettings,
 	projectId: string | null,
+	defaultFolderPath?: string, // Preselected folder; defaults to the active chapter's
 ): Promise<void> {
 	// Check if a project ID is provided
 	if (!projectId) {
@@ -78,7 +80,31 @@ export async function promptAndCreateNewChapter(
 		(selectedFolderPath, chapterName) => {
 			void createChapter(app, settings, selectedFolderPath, chapterName);
 		},
-		// Default to the folder of the chapter you're in, if it belongs to this project
-		getActiveChapterFolder(app, settings, currentNovelProject),
+		// Otherwise the folder of the chapter you're in, if it belongs to this project
+		defaultFolderPath ?? getActiveChapterFolder(app, settings, currentNovelProject),
+	).open();
+}
+
+// Asks for a new folder name, then renames the folder and reports the new name
+export function promptAndRenameChapterFolder(
+	app: App,
+	folder: TFolder,
+	onRenamed: (oldName: string, newName: string) => void,
+): void {
+	const oldName = folder.name;
+	new ChapterNameModal(
+		app,
+		"Rename folder",
+		"Rename",
+		oldName,
+		(newName) => {
+			renameChapterFolder(app, folder, newName)
+				.then((renamed) => {
+					// folder.name is already updated by the rename
+					if (renamed) onRenamed(oldName, folder.name);
+				})
+				.catch(console.error);
+		},
+		"Folder name",
 	).open();
 }

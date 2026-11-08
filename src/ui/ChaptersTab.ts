@@ -9,12 +9,15 @@ import {
 	normalizePath,
 	Notice,
 	setIcon,
-	TextComponent,
+	SearchComponent,
 	TFile,
+	TFolder,
 } from "obsidian";
 import type NovelChapterPlugin from "../main";
+import type { NovelProject } from "../settings";
 import {
 	getChapterFolderOptions,
+	getGroupFolderPath,
 	getProjectChapters,
 	moveChapter,
 	openAdjacentChapter,
@@ -23,11 +26,13 @@ import {
 	promptAndCreateNewChapter,
 	promptAndDeleteChapter,
 	promptAndRenameChapter,
+	promptAndRenameChapterFolder,
 } from "./chapterPrompts";
 import { buildOptions, checkboxState, filterMatches } from "../core/property";
 import { getChapterGroupKey, OTHER_GROUP_KEY } from "../core/utils";
 import type { TabContext } from "./NovelChapterView";
 import { renderPropertyCheckbox, renderPropertyDropdown } from "./PropertyCell";
+import { renderEmptyState } from "./emptyState";
 
 // Filter values for the checkbox property type
 const FILTER_CHECKED = "__novel-manager-checked__";
@@ -41,6 +46,14 @@ export class ChaptersTab {
 	// Collapsed chapter groups (by group key), kept across re-renders
 	private collapsedGroups = new Set<string>();
 	private currentGroupKeys: string[] = [];
+	private toggleGroupsButton: ButtonComponent | null = null; // Collapse/expand all, updated after each render
+
+	// Lookups filled on each render, for highlighting and revealing chapters
+	private rowsByPath = new Map<string, HTMLTableRowElement>();
+	private groupHeaderByKey = new Map<string, HTMLTableRowElement>();
+	private groupKeyByPath = new Map<string, string>();
+	private scrolledToPath: string | null = null; // Last file scrolled to, so each file scrolls once
+	private theadObserver: ResizeObserver | null = null; // Keeps --novel-thead-height in sync
 
 	constructor(
 		private context: TabContext,
@@ -60,8 +73,9 @@ export class ChaptersTab {
 		return this.context.getSelectedProjectId();
 	}
 
-	private buildProjectSelector(parentEl: HTMLElement): void {
-		this.context.buildProjectSelector(parentEl);
+	// Called by the view when it closes
+	dispose(): void {
+		this.theadObserver?.disconnect();
 	}
 
 	// Called by the view when the selected project changes
@@ -69,29 +83,80 @@ export class ChaptersTab {
 		this.collapsedGroups.clear(); // Collapse state belongs to the previous project
 	}
 
-	// Renders the controls for managing novel projects
+	// Renders the toolbar: search, filter and buttons on one wrapping line
 	async renderControls(): Promise<void> {
 		this.controlsContainer.empty();
+		this.toggleGroupsButton = null;
 
-		const projects = this.plugin.settings.novelProjects;
-		if (projects.length === 0) {
-			this.controlsContainer.setText(
-				"No novel projects configured. Please add one in plugin settings.",
-			);
-			return;
+		// The view's project selector already explains a missing project
+		if (this.plugin.settings.novelProjects.length === 0) return;
+
+		const controlsLine = this.controlsContainer.createDiv({
+			cls: "novel-chapter-controls-line",
+		});
+
+		// Search Input
+		const debouncedSearch = debounce((value: string) => {
+			this.searchTerm = value;
+			this.renderChapterTable().catch(console.error);
+		}, 250); // 250ms delay
+
+		const search = new SearchComponent(controlsLine)
+			.setPlaceholder("Search chapters...")
+			.setValue(this.searchTerm)
+			.onChange(debouncedSearch);
+		search.inputEl.parentElement?.addClass("novel-chapter-search"); // The search box wrapper
+
+		// Filter and buttons stay together, so they wrap below the search as one block
+		const actionsEl = controlsLine.createDiv({ cls: "novel-chapter-actions" });
+
+		// Property Filter Dropdown
+		const { propertyType, propertyColumnHeader, propertyNameToChange } =
+			this.plugin.settings;
+		const isCheckbox = propertyType === "checkbox";
+		const { options } = buildOptions(this.plugin.settings);
+		// Checked/Unchecked for checkboxes, otherwise one entry per option label
+		const filterEntries = isCheckbox
+			? [
+					{ text: "Checked", value: FILTER_CHECKED },
+					{ text: "Unchecked", value: FILTER_UNCHECKED },
+				]
+			: options.map((option) => ({ text: option.label, value: option.label }));
+
+		// Reset a filter whose option no longer exists
+		if (
+			this.filterValue !== "all" &&
+			!filterEntries.some((entry) => entry.value === this.filterValue)
+		) {
+			this.filterValue = "all";
 		}
 
-		const controlsLine1 = this.controlsContainer.createDiv({
-			cls: "novel-chapter-controls-line",
-		});
-		const controlsLine2 = this.controlsContainer.createDiv({
-			cls: "novel-chapter-controls-line",
-		});
+		// If there are entries to filter by, create a select element
+		if (filterEntries.length > 0) {
+			const filterSelect = actionsEl.createEl("select", {
+				cls: "dropdown novel-chapter-filter-select",
+			});
+			const header = propertyColumnHeader.trim() || propertyNameToChange;
+			filterSelect.createEl("option", {
+				text: `${header}: all`,
+				value: "all",
+			});
+			filterEntries.forEach((entry) => {
+				filterSelect.createEl("option", entry);
+			});
+			// Set the current filter value
+			filterSelect.value = this.filterValue;
+			// Event listener for when the filter value changes
+			filterSelect.addEventListener("change", () => {
+				this.filterValue = filterSelect.value;
+				this.renderChapterTable().catch(console.error); // Re-render the chapter table with the new filter value
+			});
+		}
 
-		this.buildProjectSelector(controlsLine1);
+		const buttonsEl = actionsEl.createDiv({ cls: "novel-chapter-buttons" });
 
-		// Open Template Folder Button
-		new ButtonComponent(controlsLine1)
+		// Open Template Button
+		new ButtonComponent(buttonsEl)
 			.setIcon("file-symlink")
 			.setTooltip("Open chapter template")
 			.onClick(() => {
@@ -114,23 +179,18 @@ export class ChaptersTab {
 					.catch(console.error);
 			});
 
-		// Collapse/Expand All Button
-		new ButtonComponent(controlsLine1)
-			.setIcon("chevrons-down")
-			.setTooltip("Toggle folder groups")
-			.onClick(() => {
-				// If any group is expanded, collapse all; otherwise expand all
-				const anyExpanded = this.currentGroupKeys.some(
-					(key) => !this.collapsedGroups.has(key),
-				);
-				this.collapsedGroups = anyExpanded
-					? new Set(this.currentGroupKeys)
-					: new Set();
-				this.renderChapterTable().catch(console.error);
-			});
+		// Collapse/Expand All Button (icon and tooltip set by updateToggleGroupsButton)
+		this.toggleGroupsButton = new ButtonComponent(buttonsEl).onClick(() => {
+			// If any group is expanded, collapse all; otherwise expand all
+			this.collapsedGroups = this.anyGroupExpanded()
+				? new Set(this.currentGroupKeys)
+				: new Set();
+			this.renderChapterTable().catch(console.error);
+		});
+		this.updateToggleGroupsButton();
 
 		// Previous Chapter Button
-		new ButtonComponent(controlsLine1)
+		new ButtonComponent(buttonsEl)
 			.setIcon("chevron-left")
 			.setTooltip("Previous chapter")
 			.onClick(() => {
@@ -143,7 +203,7 @@ export class ChaptersTab {
 			});
 
 		// Next Chapter Button
-		new ButtonComponent(controlsLine1)
+		new ButtonComponent(buttonsEl)
 			.setIcon("chevron-right")
 			.setTooltip("Next chapter")
 			.onClick(() => {
@@ -156,72 +216,48 @@ export class ChaptersTab {
 			});
 
 		// New Chapter Button
-		new ButtonComponent(controlsLine1)
+		new ButtonComponent(buttonsEl)
 			.setIcon("plus")
 			.setTooltip("New chapter")
 			.setClass("novel-chapter-new-button")
-			.onClick(async () => {
-				// Prompt the user to create a new chapter in the selected project
-				await promptAndCreateNewChapter(this.app, this.plugin.settings,
-					this.selectedNovelProjectId,
-				);
-			});
+			.onClick(() => this.newChapter());
+	}
 
-		// Search Input
-		const debouncedSearch = debounce((value: string) => {
-			this.searchTerm = value;
-			this.renderChapterTable().catch(console.error);
-		}, 250); // 250ms delay
+	// Opens the new-chapter dialog for the selected project
+	private newChapter(): void {
+		promptAndCreateNewChapter(
+			this.app,
+			this.plugin.settings,
+			this.selectedNovelProjectId,
+		).catch(console.error);
+	}
 
-		new TextComponent(controlsLine2)
-			.setPlaceholder("Search chapters...")
-			.setValue(this.searchTerm)
-			.onChange(debouncedSearch)
-			.inputEl.addClass("novel-chapter-search-input");
+	// Whether any group in the table is expanded
+	private anyGroupExpanded(): boolean {
+		return this.currentGroupKeys.some((key) => !this.collapsedGroups.has(key));
+	}
 
-		// Property Filter Dropdown
-		const isCheckbox = this.plugin.settings.propertyType === "checkbox";
-		const { options } = buildOptions(this.plugin.settings);
-		// Checked/Unchecked for checkboxes, otherwise one entry per option label
-		const filterEntries = isCheckbox
-			? [
-					{ text: "Checked", value: FILTER_CHECKED },
-					{ text: "Unchecked", value: FILTER_UNCHECKED },
-				]
-			: options.map((option) => ({ text: option.label, value: option.label }));
-
-		// Reset a filter whose option no longer exists
-		if (
-			this.filterValue !== "all" &&
-			!filterEntries.some((entry) => entry.value === this.filterValue)
-		) {
-			this.filterValue = "all";
-		}
-
-		// If there are entries to filter by, create a select element
-		if (filterEntries.length > 0) {
-			const filterSelect = controlsLine2.createEl("select");
-			filterSelect.addClass("novel-chapter-filter-select");
-			filterSelect.createEl("option", {
-				text: "Filter by property...",
-				value: "all",
-			});
-			filterEntries.forEach((entry) => {
-				filterSelect.createEl("option", entry);
-			});
-			// Set the current filter value
-			filterSelect.value = this.filterValue;
-			// Event listener for when the filter value changes
-			filterSelect.addEventListener("change", (event) => {
-				this.filterValue = (event.target as HTMLSelectElement).value;
-				this.renderChapterTable().catch(console.error); // Re-render the chapter table with the new filter value
-			});
-		}
+	// Shows the action the collapse/expand button will do next
+	private updateToggleGroupsButton(): void {
+		const button = this.toggleGroupsButton;
+		if (!button) return;
+		const expanded = this.anyGroupExpanded();
+		button
+			.setIcon(expanded ? "chevrons-down-up" : "chevrons-up-down")
+			.setTooltip(expanded ? "Collapse all" : "Expand all")
+			.setDisabled(this.currentGroupKeys.length === 0); // Nothing to toggle
 	}
 
 	// Renders the chapter table based on the selected novel project
 	async renderChapterTable(): Promise<void> {
 		this.tableContainer.empty(); // Clear existing table content
+		this.currentGroupKeys = []; // Early returns below leave no groups
+		this.updateToggleGroupsButton();
+		this.rowsByPath.clear();
+		this.groupHeaderByKey.clear();
+		this.groupKeyByPath.clear();
+		this.theadObserver?.disconnect();
+		this.theadObserver = null;
 
 		if (!this.selectedNovelProjectId) return; // If no project is selected, do nothing
 
@@ -231,7 +267,7 @@ export class ChaptersTab {
 		);
 		// If the project is not found, show an error message
 		if (!currentNovelProject) {
-			this.tableContainer.setText("Selected novel project not found.");
+			renderEmptyState(this.tableContainer, "Selected novel project not found.");
 			return;
 		}
 
@@ -255,7 +291,8 @@ export class ChaptersTab {
 
 		// If no chapters folder path is configured, show a message
 		if (!chaptersFolderPath || chaptersFolderPath.trim() === "") {
-			this.tableContainer.setText(
+			renderEmptyState(
+				this.tableContainer,
 				`Project "${currentNovelProject.name}" has no folder path configured.`,
 			);
 			return;
@@ -263,7 +300,26 @@ export class ChaptersTab {
 
 		// Get the project's chapters (already in display order, fragments folder excluded)
 		const normalizedChaptersFolderPath = normalizePath(chaptersFolderPath);
+
+		// A missing folder isn't an error: creating the first chapter creates it
+		if (!(this.app.vault.getAbstractFileByPath(normalizedChaptersFolderPath) instanceof TFolder)) {
+			renderEmptyState(
+				this.tableContainer,
+				`Folder "${normalizedChaptersFolderPath}" doesn't exist yet. It will be created with your first chapter.`,
+				{ label: "New chapter", onClick: () => this.newChapter() },
+			);
+			return;
+		}
 		let chapterFiles = getProjectChapters(this.app, this.plugin.settings, currentNovelProject);
+
+		// No chapters at all (before filtering)
+		if (chapterFiles.length === 0) {
+			renderEmptyState(this.tableContainer, "No chapters yet.", {
+				label: "New chapter",
+				onClick: () => this.newChapter(),
+			});
+			return;
+		}
 
 		// Apply Property Filter
 		if (this.filterValue !== "all") {
@@ -295,10 +351,20 @@ export class ChaptersTab {
 			);
 		}
 
-		// If no chapters are found, show a message
+		// Chapters exist, but the search or filter hides them all
 		if (chapterFiles.length === 0) {
-			this.tableContainer.setText(
-				`No chapters found in "${normalizedChaptersFolderPath}" matching your criteria.`,
+			renderEmptyState(
+				this.tableContainer,
+				"No chapters match your search or filter.",
+				{
+					label: "Clear search and filter",
+					onClick: () => {
+						this.searchTerm = "";
+						this.filterValue = "all";
+						// Controls too, so the search box and dropdown show the reset
+						void this.renderControls().then(() => this.renderChapterTable());
+					},
+				},
 			);
 			return;
 		}
@@ -321,6 +387,7 @@ export class ChaptersTab {
 			group.files.push(file);
 		}
 		this.currentGroupKeys = groups.map((g) => g.key);
+		this.updateToggleGroupsButton();
 
 		// Calculate the total count of chapters, excluding "Other" group if configured
 		let totalCount = chapterFiles.length;
@@ -348,6 +415,15 @@ export class ChaptersTab {
 			headerRow.createEl("th", { text: propertyHeader });
 		}
 
+		// Group headers stick right below the column header, so track its height
+		// (an observer, since it's 0 while the tab is hidden and changes with zoom)
+		this.theadObserver = new ResizeObserver(() => {
+			this.tableContainer.setCssProps({
+				"--novel-thead-height": `${thead.offsetHeight}px`,
+			});
+		});
+		this.theadObserver.observe(thead);
+
 		// Render Table Body with grouped chapters
 		const tbody = table.createEl("tbody");
 		for (const group of groups) {
@@ -360,6 +436,7 @@ export class ChaptersTab {
 				cls: "chapter-group-header",
 			});
 			groupHeaderRow.toggleClass("collapsed", startCollapsed);
+			this.groupHeaderByKey.set(group.key, groupHeaderRow);
 
 			// Create a header cell that spans all columns
 			const groupHeaderCell = groupHeaderRow.createEl("td");
@@ -387,12 +464,22 @@ export class ChaptersTab {
 				groupHeaderRow.toggleClass("collapsed", isCollapsed);
 				setIcon(iconEl, isCollapsed ? "chevron-right" : "chevron-down");
 				groupRows.forEach((row) => row.toggle(!isCollapsed));
+				this.updateToggleGroupsButton();
+				this.highlightActiveChapter(false); // Moves between the row and its group header
+			});
+
+			// Right-click menu for the group
+			groupHeaderRow.addEventListener("contextmenu", (ev) => {
+				ev.preventDefault();
+				this.showGroupMenu(ev, group.key, currentNovelProject);
 			});
 
 			// For each file in the group, create a row in the table
 			for (const file of group.files) {
 				const row = tbody.createEl("tr", { cls: "chapter-data-row" });
 				groupRows.push(row);
+				this.rowsByPath.set(file.path, row);
+				this.groupKeyByPath.set(file.path, group.key);
 				if (startCollapsed) row.hide();
 
 				const chapterCell = row.createEl("td");
@@ -419,12 +506,36 @@ export class ChaptersTab {
 						.catch(console.error);
 				});
 
-				// Context menu: rename, delete, move
-				chapterLink.addEventListener(
+				// Context menu on the whole row: open, rename, delete, move
+				row.addEventListener(
 					"contextmenu",
 					(ev: MouseEvent) => {
 						ev.preventDefault();
 						const menu = new Menu();
+
+						// Open Actions
+						menu.addItem((item: MenuItem) =>
+							item
+								.setTitle("Open in new tab")
+								.setIcon("file-plus")
+								.onClick(() => {
+									this.app.workspace
+										.openLinkText(file.path, "", "tab")
+										.catch(console.error);
+								}),
+						);
+						menu.addItem((item: MenuItem) =>
+							item
+								.setTitle("Open to the right")
+								.setIcon("separator-vertical")
+								.onClick(() => {
+									this.app.workspace
+										.openLinkText(file.path, "", "split")
+										.catch(console.error);
+								}),
+						);
+
+						menu.addSeparator();
 
 						// Rename Action
 						menu.addItem((item: MenuItem) =>
@@ -536,5 +647,100 @@ export class ChaptersTab {
 				}
 			}
 		}
+
+		this.highlightActiveChapter(false); // No scrolling on plain refreshes
+	}
+
+	// Right-click menu on a group header: new chapter here, rename folder, collapse others
+	private showGroupMenu(ev: MouseEvent, groupKey: string, project: NovelProject): void {
+		const folderPath = getGroupFolderPath(project, groupKey);
+		const menu = new Menu();
+
+		menu.addItem((item) =>
+			item
+				.setTitle("New chapter here")
+				.setIcon("file-plus")
+				.onClick(() => {
+					promptAndCreateNewChapter(
+						this.app,
+						this.plugin.settings,
+						project.id,
+						folderPath,
+					).catch(console.error);
+				}),
+		);
+
+		menu.addItem((item) => {
+			item.setTitle("Rename folder").setIcon("pencil");
+			// The "Other" group is the project folder itself (renamed in settings)
+			const folder = this.app.vault.getAbstractFileByPath(folderPath);
+			if (groupKey === OTHER_GROUP_KEY || !(folder instanceof TFolder)) {
+				item.setDisabled(true);
+				return;
+			}
+			item.onClick(() => {
+				promptAndRenameChapterFolder(this.app, folder, (oldName, newName) => {
+					// Keep a collapsed group collapsed under its new name
+					if (this.collapsedGroups.delete(oldName)) this.collapsedGroups.add(newName);
+				});
+			});
+		});
+
+		menu.addSeparator();
+
+		menu.addItem((item) =>
+			item
+				.setTitle("Collapse other groups")
+				.setIcon("chevrons-down-up")
+				.onClick(() => {
+					this.collapsedGroups = new Set(
+						this.currentGroupKeys.filter((key) => key !== groupKey),
+					);
+					this.renderChapterTable().catch(console.error);
+				}),
+		);
+
+		menu.showAtMouseEvent(ev);
+	}
+
+	// Marks the open chapter's row (or its collapsed group's header); scroll only when it changed
+	highlightActiveChapter(scroll: boolean): void {
+		this.tableContainer
+			.querySelectorAll(".is-active-chapter, .has-active-chapter")
+			.forEach((el) => el.removeClass("is-active-chapter", "has-active-chapter"));
+
+		const path = this.app.workspace.getActiveFile()?.path ?? null;
+		// Only scroll calls update this, so a redraw in between doesn't swallow the scroll
+		const changed = path !== this.scrolledToPath;
+		if (scroll) this.scrolledToPath = path;
+		if (!path) return;
+
+		const row = this.rowsByPath.get(path);
+		if (!row) return; // Not a chapter in this table
+
+		// A collapsed group hides the row, so mark its header instead
+		const groupKey = this.groupKeyByPath.get(path) ?? "";
+		const target = this.collapsedGroups.has(groupKey)
+			? this.groupHeaderByKey.get(groupKey)
+			: row;
+		if (!target) return;
+		target.addClass(target === row ? "is-active-chapter" : "has-active-chapter");
+		if (scroll && changed) target.scrollIntoView({ block: "nearest" });
+	}
+
+	// Shows a chapter: expands its group, scrolls it to the center and flashes it
+	async revealChapter(file: TFile): Promise<void> {
+		const groupKey = this.groupKeyByPath.get(file.path);
+		if (groupKey !== undefined && this.collapsedGroups.delete(groupKey)) {
+			await this.renderChapterTable(); // Re-render with the group expanded
+		}
+		const row = this.rowsByPath.get(file.path);
+		if (!row) return;
+		row.scrollIntoView({ block: "center" });
+		// Restart the animation if it's already running
+		row.removeClass("novel-flash");
+		void row.offsetWidth;
+		row.addClass("novel-flash");
+		row.addEventListener("animationend", () => row.removeClass("novel-flash"), { once: true });
 	}
 }

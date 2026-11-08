@@ -1,5 +1,12 @@
-import { App, ItemView, WorkspaceLeaf } from "obsidian";
+import { App, ItemView, Scope, TFile, WorkspaceLeaf } from "obsidian";
 import type NovelChapterPlugin from "../main";
+import {
+	findProjectForFile,
+	getFragmentsPath,
+	getProjectChapters,
+	getProjectFragments,
+} from "../core/chapters";
+import { getChapterGroupKey, OTHER_GROUP_KEY } from "../core/utils";
 import { ChaptersTab } from "./ChaptersTab";
 import { FragmentsTab } from "./FragmentsTab";
 
@@ -10,24 +17,31 @@ export const VIEW_TYPE = "novel-chapter-view";
 export interface TabContext {
 	app: App;
 	plugin: NovelChapterPlugin;
+	scope: Scope; // The view's hotkey scope, checked before global hotkeys
 	getSelectedProjectId(): string | null;
-	buildProjectSelector(parentEl: HTMLElement): void;
 }
 
-// The sidebar view: tab bar, project selection, and deciding what to redraw
+type TabName = "chapters" | "fragments";
+
+// The sidebar view: project selector, tab bar, and deciding what to redraw
 export class NovelChapterView extends ItemView {
 	plugin: NovelChapterPlugin; // Reference to the plugin instance
 
 	// Layout Containers
+	projectSelectorContainer!: HTMLDivElement;
 	tabsContainer!: HTMLDivElement;
 	chaptersTabContainer!: HTMLDivElement;
 	fragmentsTabContainer!: HTMLDivElement;
 	controlsContainer!: HTMLDivElement;
 	tableContainer!: HTMLDivElement;
 
-	activeTab: "chapters" | "fragments" = "chapters"; // Track current tab
+	activeTab: TabName = "chapters"; // Track current tab
 	selectedNovelProjectId: string | null = null; // ID of the currently selected novel project
 	private displayedProjectId: string | null | undefined = undefined; // Project the tab title was last set for
+
+	// The project dropdown and the tab bar items, kept to update without rebuilding
+	private projectSelectEl: HTMLSelectElement | null = null;
+	private tabEls: Partial<Record<TabName, { tabEl: HTMLElement; countEl: HTMLElement }>> = {};
 
 	// The two tabs, created in onOpen
 	private chaptersTab!: ChaptersTab;
@@ -36,6 +50,8 @@ export class NovelChapterView extends ItemView {
 	constructor(leaf: WorkspaceLeaf, plugin: NovelChapterPlugin) {
 		super(leaf);
 		this.plugin = plugin;
+		// Own hotkey scope, so view shortcuts win over global ones (e.g. Mod+Enter)
+		this.scope = new Scope(this.app.scope);
 	}
 
 	// Returns the view type for this custom view
@@ -64,8 +80,16 @@ export class NovelChapterView extends ItemView {
 		contentEl.empty(); // Clear existing content
 		contentEl.addClass("novel-chapter-view-container");
 
-		// Create the Tab Toggle Container
-		this.tabsContainer = contentEl.createDiv({ cls: "novel-view-tabs" });
+		// Project selector, shared by both tabs
+		this.projectSelectorContainer = contentEl.createDiv({
+			cls: "novel-project-selector-container",
+		});
+
+		// Tab bar (hidden while fragments are off)
+		this.tabsContainer = contentEl.createDiv({
+			cls: "novel-view-tabs",
+			attr: { role: "tablist" },
+		});
 
 		// Create the Wrappers for each Tab
 		this.chaptersTabContainer = contentEl.createDiv({
@@ -73,8 +97,8 @@ export class NovelChapterView extends ItemView {
 		});
 		this.fragmentsTabContainer = contentEl.createDiv({
 			cls: "novel-tab-content fragments-tab",
-			attr: { style: "display: none;" },
 		});
+		this.fragmentsTabContainer.hide();
 
 		// Inject existing containers into the Chapters tab wrapper
 		this.controlsContainer = this.chaptersTabContainer.createDiv({
@@ -88,8 +112,8 @@ export class NovelChapterView extends ItemView {
 		const context: TabContext = {
 			app: this.app,
 			plugin: this.plugin,
+			scope: this.scope as Scope, // Set in the constructor
 			getSelectedProjectId: () => this.selectedNovelProjectId,
-			buildProjectSelector: (parentEl) => this.buildProjectSelector(parentEl),
 		};
 		this.chaptersTab = new ChaptersTab(
 			context,
@@ -103,17 +127,53 @@ export class NovelChapterView extends ItemView {
 
 	// Called when the view is closed
 	async onClose(): Promise<void> {
-		// Nothing to clean up
+		this.chaptersTab.dispose();
 	}
 
-	// Renders the controls and settings for the plugin
-	async updateView(settingsHaveChanged = false) {
-		// If settings have changed, re-render the controls and tabs
-		if (settingsHaveChanged) {
-			this.renderTabs(); // Render the top toggle buttons
-			await this.chaptersTab.renderControls();
-		}
+	// Switches to a project: redraws only this view, once
+	async selectProject(projectId: string): Promise<void> {
+		if (projectId === this.selectedNovelProjectId) return;
+		this.selectedNovelProjectId = projectId;
+		this.plugin.settings.lastSelectedNovelId = projectId;
+		this.chaptersTab.onProjectChanged(); // Collapse state belongs to the previous project
+		// No refresh: this view redraws itself right after
+		await this.plugin.saveSettings(false);
+		await this.updateView(); // Also syncs the dropdown
+	}
 
+	// Called by the plugin when a file is opened anywhere in the workspace
+	async onFileOpen(file: TFile | null): Promise<void> {
+		// Follow the open chapter's (or fragment's) project, if enabled
+		if (file && this.plugin.settings.followActiveChapter) {
+			const project = findProjectForFile(this.plugin.settings, file, true);
+			if (project) await this.selectProject(project.id);
+		}
+		this.chaptersTab.highlightActiveChapter(true);
+	}
+
+	// Shows a tab (used by commands)
+	showTab(tab: TabName): void {
+		if (tab === "fragments" && !this.plugin.settings.enableFragments) return;
+		this.switchTab(tab);
+	}
+
+	// Focuses the fragment creation box
+	focusFragmentBox(): void {
+		this.showTab("fragments");
+		this.fragmentsTab.focusCreationBox();
+	}
+
+	// Switches to a chapter's project and tab, then scrolls to and flashes its row
+	async revealChapter(file: TFile): Promise<void> {
+		const project = findProjectForFile(this.plugin.settings, file);
+		if (!project) return;
+		await this.selectProject(project.id);
+		this.showTab("chapters");
+		await this.chaptersTab.revealChapter(file);
+	}
+
+	// Redraws the view; settingsHaveChanged also rebuilds the selector, tabs and controls
+	async updateView(settingsHaveChanged = false) {
 		// Pick a project if none (or a removed one) is selected
 		if (
 			!this.selectedNovelProjectId ||
@@ -142,13 +202,15 @@ export class NovelChapterView extends ItemView {
 			}
 		}
 
-		// Keep every project selector in this view (chapters and fragments tabs) in sync
-		if (this.selectedNovelProjectId) {
-			this.containerEl
-				.querySelectorAll<HTMLSelectElement>("select.novel-project-selector")
-				.forEach((selectEl) => {
-					selectEl.value = this.selectedNovelProjectId as string;
-				});
+		// If settings have changed, re-render the selector, tabs and controls
+		if (settingsHaveChanged) {
+			this.renderProjectSelector();
+			this.renderTabs();
+			await this.chaptersTab.renderControls();
+		}
+		// Keep the dropdown on the selected project
+		if (this.projectSelectEl && this.selectedNovelProjectId) {
+			this.projectSelectEl.value = this.selectedNovelProjectId;
 		}
 
 		// Update the tab title only when it can change (too heavy for every file change)
@@ -159,6 +221,7 @@ export class NovelChapterView extends ItemView {
 			this.displayedProjectId = this.selectedNovelProjectId;
 			this.updateLeafDisplayText();
 		}
+		this.updateTabCounts();
 		await this.chaptersTab.renderChapterTable(); // Render the chapter table based on the selected project
 
 		// Rebuild the fragments tab only on settings changes, so the draft and focus survive
@@ -170,42 +233,109 @@ export class NovelChapterView extends ItemView {
 		this.switchTab(this.activeTab); // Ensure the correct CSS display state is active
 	}
 
+	// Builds the project dropdown above the tabs
+	private renderProjectSelector() {
+		this.projectSelectorContainer.empty();
+		this.projectSelectEl = null;
+
+		const projects = this.plugin.settings.novelProjects;
+		if (projects.length === 0) {
+			this.projectSelectorContainer.setText(
+				"No novel projects configured. Please add one in plugin settings.",
+			);
+			return;
+		}
+
+		const selectEl = this.projectSelectorContainer.createEl("select", {
+			cls: "dropdown novel-project-selector",
+		});
+		this.projectSelectEl = selectEl;
+		for (const project of projects) {
+			selectEl.createEl("option", {
+				text: project.name || "Unnamed Novel",
+				value: project.id,
+			});
+		}
+		if (this.selectedNovelProjectId) selectEl.value = this.selectedNovelProjectId;
+
+		selectEl.addEventListener("change", () => {
+			this.selectProject(selectEl.value).catch(console.error);
+		});
+	}
+
+	// Builds the tab bar (a segmented control with counts)
 	private renderTabs() {
-		this.tabsContainer.empty(); // Clear the tabs container
+		this.tabsContainer.empty();
+		this.tabEls = {};
 
 		// Check the global setting: hide tabs if fragments are disabled
 		if (!this.plugin.settings.enableFragments) {
-            this.activeTab = "chapters";
-            this.tabsContainer.hide();
-            return;
-        } else {
-			this.tabsContainer.show();
+			this.activeTab = "chapters";
+			this.tabsContainer.hide();
+			return;
 		}
+		this.tabsContainer.show();
 
-		const btnChapters = this.tabsContainer.createEl("button", {
-			text: "Chapters",
-		});
-		const btnFragments = this.tabsContainer.createEl("button", {
-			text: "Fragments",
-		});
-
-		btnChapters.onclick = () => this.switchTab("chapters");
-		btnFragments.onclick = () => this.switchTab("fragments");
-
-		// Visually highlight the active tab using Obsidian's native CTA class
-		btnChapters.className = this.activeTab === "chapters" ? "mod-cta" : "";
-		btnFragments.className =
-			this.activeTab === "fragments" ? "mod-cta" : "";
+		const labels: Record<TabName, string> = {
+			chapters: "Chapters",
+			fragments: "Fragments",
+		};
+		for (const tab of ["chapters", "fragments"] as TabName[]) {
+			const tabEl = this.tabsContainer.createDiv({
+				cls: "novel-view-tab",
+				attr: { role: "tab", tabindex: "0" },
+			});
+			tabEl.createSpan({ text: labels[tab] });
+			const countEl = tabEl.createSpan({ cls: "novel-view-tab-count" });
+			tabEl.addEventListener("click", () => this.switchTab(tab));
+			// Keyboard access, since these are divs
+			tabEl.addEventListener("keydown", (e) => {
+				if (e.key === "Enter" || e.key === " ") {
+					e.preventDefault();
+					this.switchTab(tab);
+				}
+			});
+			this.tabEls[tab] = { tabEl, countEl };
+		}
 	}
 
-	private switchTab(tab: "chapters" | "fragments") {
-		this.activeTab = tab;
-		this.chaptersTabContainer.style.display =
-			tab === "chapters" ? "" : "none";
-		this.fragmentsTabContainer.style.display =
-			tab === "fragments" ? "flex" : "none";
+	// Updates the counts in the tab labels (unfiltered totals)
+	private updateTabCounts() {
+		const { chapters, fragments } = this.tabEls;
+		if (!chapters || !fragments) return; // Tab bar hidden
 
-		this.renderTabs(); // Update button active states
+		const project = this.plugin.settings.novelProjects.find(
+			(p) => p.id === this.selectedNovelProjectId,
+		);
+		let chapterFiles = project
+			? getProjectChapters(this.app, this.plugin.settings, project)
+			: [];
+		if (project && this.plugin.settings.excludeOtherFromCount) {
+			chapterFiles = chapterFiles.filter(
+				(file) => getChapterGroupKey(file, project.path) !== OTHER_GROUP_KEY,
+			);
+		}
+		const fragmentsPath = project
+			? getFragmentsPath(this.plugin.settings, project)
+			: null;
+		const fragmentCount = fragmentsPath
+			? getProjectFragments(this.app, fragmentsPath).length // Order doesn't matter for a count
+			: 0;
+
+		chapters.countEl.setText(String(chapterFiles.length));
+		fragments.countEl.setText(String(fragmentCount));
+	}
+
+	// Shows a tab and marks it active in the tab bar
+	private switchTab(tab: TabName) {
+		this.activeTab = tab;
+		this.chaptersTabContainer.toggle(tab === "chapters");
+		this.fragmentsTabContainer.toggle(tab === "fragments");
+		for (const [name, els] of Object.entries(this.tabEls)) {
+			const isActive = name === tab;
+			els.tabEl.toggleClass("is-active", isActive);
+			els.tabEl.setAttr("aria-selected", String(isActive));
+		}
 	}
 
 	// Updates the leaf display text to reflect the current project
@@ -215,57 +345,5 @@ export class NovelChapterView extends ItemView {
 				.setViewState(this.leaf.getViewState())
 				.catch(console.error);
 		}
-	}
-
-	private buildProjectSelector(parentEl: HTMLElement) {
-		// Create the select element directly on the provided parent
-		const selectEl = parentEl.createEl("select");
-        selectEl.addClass("novel-project-selector");
-
-		const projects = this.plugin.settings.novelProjects;
-
-		// If no projects are available, show a message
-		if (projects.length === 0) {
-			parentEl.setText(
-				"No novel projects configured. Please add one in plugin settings.",
-			);
-			return;
-		}
-
-		// Create an option for each project
-		projects.forEach((project) => {
-			selectEl.createEl("option", {
-				text: project.name || "Unnamed Novel",
-				value: project.id,
-			});
-		});
-
-		// Maintain the selected state
-		if (
-			this.selectedNovelProjectId &&
-			projects.find((p) => p.id === this.selectedNovelProjectId)
-		) {
-			selectEl.value = this.selectedNovelProjectId;
-		} else if (projects.length > 0) {
-			this.selectedNovelProjectId = projects[0].id;
-			selectEl.value = this.selectedNovelProjectId;
-		}
-
-		// Event listener for when the selected project changes
-		selectEl.addEventListener("change", (event) => {
-			this.selectedNovelProjectId = (
-				event.target as HTMLSelectElement
-			).value;
-			this.plugin.settings.lastSelectedNovelId =
-				this.selectedNovelProjectId;
-			this.chaptersTab.onProjectChanged(); // Collapse state belongs to the previous project
-
-			const saveAndUpdate = async () => {
-				await this.plugin.saveSettings();
-				await this.updateView();
-			};
-
-			void saveAndUpdate();
-		});
 	}
 }

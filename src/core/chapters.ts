@@ -84,12 +84,24 @@ export function getProjectChapters(
 	);
 }
 
+// Order of the fragments feed
+export type FragmentSort = "newest" | "oldest" | "name";
+export const FRAGMENT_SORTS: readonly FragmentSort[] = ["newest", "oldest", "name"];
+
 // Helper to get sorted fragments for a given project path
-export function getProjectFragments(app: App, fragmentsPath: string): TFile[] {
+export function getProjectFragments(
+	app: App,
+	fragmentsPath: string,
+	order: FragmentSort = "newest",
+): TFile[] {
 	if (!fragmentsPath || fragmentsPath.trim() === "") return [];
 
 	const fragmentFiles = getMarkdownFilesInFolder(app, fragmentsPath);
-	fragmentFiles.sort((a, b) => b.stat.mtime - a.stat.mtime);
+	fragmentFiles.sort((a, b) => {
+		if (order === "name") return naturalCompare(a.basename, b.basename);
+		if (order === "oldest") return a.stat.mtime - b.stat.mtime;
+		return b.stat.mtime - a.stat.mtime;
+	});
 	return fragmentFiles;
 }
 
@@ -128,16 +140,28 @@ export async function moveChapter(
 	}
 }
 
-// Helper to find which project a file belongs to
+// Helper to find which project a file belongs to (as a chapter, or also as a fragment)
 export function findProjectForFile(
 	settings: NovelChapterPluginSettings,
 	file: TFile,
+	includeFragments = false,
 ): NovelProject | null {
 	if (!file) return null; // If no file is provided, return null
-	return (
-		settings.novelProjects.find((p) => isChapterOf(settings, file, p)) ||
-		null
-	);
+	let best: NovelProject | null = null;
+	let bestDepth = -1;
+	for (const project of settings.novelProjects) {
+		const fragmentsPath = includeFragments ? getFragmentsPath(settings, project) : null;
+		const matches =
+			isChapterOf(settings, file, project) ||
+			(!!fragmentsPath && isFileInFolder(file, fragmentsPath));
+		// Nested project folders: the deepest match wins
+		const depth = normalizePath(project.path).length;
+		if (matches && depth > bestDepth) {
+			best = project;
+			bestDepth = depth;
+		}
+	}
+	return best;
 }
 
 // Updates a chapter's frontmatter property, with Undo
@@ -379,11 +403,49 @@ export function getActiveChapterFolder(
 	const activeFile = app.workspace.getActiveFile();
 	if (!activeFile || !isChapterOf(settings, activeFile, project)) return undefined;
 
-	// Its first-level subfolder, or the project folder for the "Other" group
-	const groupKey = getChapterGroupKey(activeFile, project.path);
+	return getGroupFolderPath(project, getChapterGroupKey(activeFile, project.path));
+}
+
+// Folder of a chapter group: its first-level subfolder, or the project folder for "Other"
+export function getGroupFolderPath(project: NovelProject, groupKey: string): string {
 	return groupKey === OTHER_GROUP_KEY
 		? normalizePath(project.path)
 		: normalizePath(`${project.path}/${groupKey}`);
+}
+
+// Renames a chapter group's folder (links are updated); returns false if it didn't happen
+export async function renameChapterFolder(
+	app: App,
+	folder: TFolder,
+	newName: string,
+): Promise<boolean> {
+	const sanitized = sanitizeFileName(newName).trim();
+	if (!sanitized) {
+		new Notice("Invalid folder name.");
+		return false;
+	}
+	if (sanitized === folder.name) return false;
+
+	// Folders at the vault root have parent path "/", which must not be prefixed
+	const parentPath = folder.parent?.path ?? "/";
+	const newPath = normalizePath(
+		parentPath === "/" ? sanitized : `${parentPath}/${sanitized}`,
+	);
+
+	// Case-only renames "exist" on case-insensitive file systems
+	const isCaseOnlyRename = newPath.toLowerCase() === folder.path.toLowerCase();
+	if (!isCaseOnlyRename && (await app.vault.adapter.exists(newPath))) {
+		new Notice(`A folder named "${sanitized}" already exists.`);
+		return false;
+	}
+	try {
+		await app.fileManager.renameFile(folder, newPath);
+		return true;
+	} catch (error) {
+		console.error("Error renaming folder:", error);
+		new Notice("Failed to rename folder. See console for details.");
+		return false;
+	}
 }
 
 // Creates a chapter file in the given folder, from the template if one is configured
@@ -401,16 +463,15 @@ export async function createChapter(
 		return;
 	}
 
-	// Check if the selected folder exists
-	if (
-		!(await app.vault.adapter.exists(
-			selectedFolderPath,
-		))
-	) {
-		new Notice(
-			`Project folder "${selectedFolderPath}" does not exist.`,
-		);
-		return;
+	// Create the folder if it doesn't exist yet
+	if (!(await app.vault.adapter.exists(normalizePath(selectedFolderPath)))) {
+		try {
+			await app.vault.createFolder(normalizePath(selectedFolderPath));
+		} catch (error) {
+			console.error("Error creating chapter folder:", error);
+			new Notice(`Failed to create folder "${selectedFolderPath}".`);
+			return;
+		}
 	}
 
 	// Create the full file path for the new chapter

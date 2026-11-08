@@ -1,6 +1,7 @@
 // Settings data: types, defaults and the repair logic used when loading.
 import { PROPERTY_TYPE_SETTINGS, PropertyTypeSetting } from "./core/property";
 import { generateId } from "./core/utils";
+import { FRAGMENT_SORTS, FragmentSort } from "./core/chapters";
 
 // Interface for a single novel project configuration
 export interface NovelProject {
@@ -23,6 +24,7 @@ export interface NovelChapterPluginSettings {
 	chapterTemplatePath: string; // Path to the chapter template file
 	otherGroupName: string; // Name for the "Other" group
 	excludeOtherFromCount: boolean; // Whether to exclude "Other" from total count
+	followActiveChapter: boolean; // Switch the view to the project of the file you open
 }
 
 // Define the default settings
@@ -44,17 +46,20 @@ export const DEFAULT_SETTINGS: NovelChapterPluginSettings = {
 	chapterTemplatePath: "", // Default to no template
 	otherGroupName: "Other", // Default name for the "Other" group
 	excludeOtherFromCount: false, // Default to including "Other" in counts
+	followActiveChapter: false,
 };
 
 // Settings plus internal state that isn't shown in the settings tab
 export interface InternalNovelChapterPluginSettings extends NovelChapterPluginSettings {
 	lastSelectedNovelId: string | null;
+	fragmentSort: FragmentSort; // Order of the fragments feed (chosen in the view)
 }
 
 // Default settings with internal properties
 export const DEFAULT_INTERNAL_SETTINGS: InternalNovelChapterPluginSettings = {
 	...DEFAULT_SETTINGS, // Spread the external default settings (includes the example project)
 	lastSelectedNovelId: null, // Initialize last selected novel ID to null
+	fragmentSort: "newest",
 };
 
 // Fills in defaults for loaded settings and repairs invalid values
@@ -77,6 +82,12 @@ export function normalizeSettings(
 	}
 	if (typeof settings.looseMatching !== "boolean") {
 		settings.looseMatching = true;
+	}
+	if (typeof settings.followActiveChapter !== "boolean") {
+		settings.followActiveChapter = false;
+	}
+	if (!FRAGMENT_SORTS.includes(settings.fragmentSort)) {
+		settings.fragmentSort = "newest";
 	}
 	if (
 		!Array.isArray(settings.novelProjects) ||

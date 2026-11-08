@@ -1,10 +1,11 @@
 // The plugin's settings screen.
-import { App, PluginSettingTab, Setting } from "obsidian";
+import { App, normalizePath, PluginSettingTab, Setting, TextComponent, TFile, TFolder } from "obsidian";
 import type NovelChapterPlugin from "../main";
 import { DEFAULT_SETTINGS } from "../settings";
 import { generateId } from "../core/utils";
 import { buildOptions, PropertyTypeSetting } from "../core/property";
 import { ConfirmationModal } from "./ConfirmationModal";
+import { FileSuggest, FolderSuggest } from "./suggest";
 
 // Builds a setting description with one line per entry
 function descriptionLines(lines: string[]): DocumentFragment {
@@ -33,25 +34,32 @@ export class NovelChapterPluginSettingsTab extends PluginSettingTab {
 		const { containerEl } = this; // Get the container element
 		containerEl.empty(); // Clear existing content
 
+		// ====== Chapters ======
+		new Setting(containerEl).setName("Chapters").setHeading();
+
 		// Create setting for specifying the chapter template file path
-		new Setting(containerEl)
+		const templateSetting = new Setting(containerEl)
 			.setName("Chapter template file path")
 			.setDesc(
 				'Path to a markdown file to use as a template for new chapters (e.g., "Templates/ChapterTemplate.md"). Leave empty to not use a template. Placeholders like {{title}} and {{date}} can be used in the template.'
-			)
-			.addText((text) =>
-				text
-					.setPlaceholder(
-						DEFAULT_SETTINGS.chapterTemplatePath ||
-							"e.g., Templates/ChapterTemplate.md"
-					)
-					.setValue(this.plugin.settings.chapterTemplatePath)
-					.onChange((value) => {
-						this.plugin.settings.chapterTemplatePath = value.trim();
-						this.plugin.saveSettingsDebounced(); // Debounced: saves and refreshes views once typing pauses
-					})
 			);
-		
+		const updateTemplateNote = this.addPathNote(templateSetting.descEl, "file", "File");
+		templateSetting.addText((text) => {
+			text
+				.setPlaceholder(
+					DEFAULT_SETTINGS.chapterTemplatePath ||
+						"e.g., Templates/ChapterTemplate.md"
+				)
+				.setValue(this.plugin.settings.chapterTemplatePath)
+				.onChange((value) => {
+					this.plugin.settings.chapterTemplatePath = value.trim();
+					updateTemplateNote(value);
+					this.plugin.saveSettingsDebounced(); // Debounced: saves and refreshes views once typing pauses
+				});
+			new FileSuggest(this.app, text.inputEl);
+		});
+		updateTemplateNote(this.plugin.settings.chapterTemplatePath);
+
 		// Create setting for naming the "Other" group
 		new Setting(containerEl)
 			.setName('Name for "other" group')
@@ -67,7 +75,7 @@ export class NovelChapterPluginSettingsTab extends PluginSettingTab {
 						this.plugin.saveSettingsDebounced(); // Debounced: saves and refreshes views once typing pauses
 					})
 			);
-		
+
 		// Create setting for excluding the "Other" group from total chapter count
 		new Setting(containerEl)
 			.setName('Exclude "other" group from total count')
@@ -82,25 +90,22 @@ export class NovelChapterPluginSettingsTab extends PluginSettingTab {
 						await this.plugin.saveSettings();
 					})
 			);
-		
-		// Create setting for enabling fragments in the plugin
+
+		// Create setting for following the open chapter's project
 		new Setting(containerEl)
-			.setName("Enable fragments")
-			.setDesc("Enable a separate section for managing scene fragments and random ideas.")
+			.setName("Follow the open chapter")
+			.setDesc("Switch the view to a chapter's project when you open it.")
 			.addToggle((toggle) =>
 				toggle
-					.setValue(this.plugin.settings.enableFragments)
+					.setValue(this.plugin.settings.followActiveChapter)
 					.onChange(async (value) => {
-						this.plugin.settings.enableFragments = value;
+						this.plugin.settings.followActiveChapter = value;
 						await this.plugin.saveSettings();
-						this.display(); // Force re-render to show/hide the fragment paths
 					})
 			);
-		
-		// Property Settings
-		new Setting(containerEl)
-		.setName("Property")
-		.setHeading();
+
+		// ====== Property column ======
+		new Setting(containerEl).setName("Property column").setHeading();
 
 		// Create setting for showing the frontmatter property column and settings
 		new Setting(containerEl)
@@ -120,18 +125,32 @@ export class NovelChapterPluginSettingsTab extends PluginSettingTab {
 
 		const propertySettingsContainer = containerEl.createDiv({
 			cls: "property-settings-container",
-		})
+		});
 		this.renderPropertySettings(propertySettingsContainer);
 
-		new Setting(containerEl)
-            .setName("Novel projects") // Lembre-se do "Sentence case" (P minúsculo!)
-            .setHeading();
-            
-        const novelProjectsContainer = containerEl.createDiv({
-            cls: "novel-projects-container",
-        });
+		// ====== Fragments ======
+		new Setting(containerEl).setName("Fragments").setHeading();
 
-		// Initial render of the novel projects list
+		// Create setting for enabling fragments in the plugin
+		new Setting(containerEl)
+			.setName("Enable fragments")
+			.setDesc("Enable a separate section for managing scene fragments and random ideas.")
+			.addToggle((toggle) =>
+				toggle
+					.setValue(this.plugin.settings.enableFragments)
+					.onChange(async (value) => {
+						this.plugin.settings.enableFragments = value;
+						await this.plugin.saveSettings();
+						this.display(); // Re-render to show/hide each project's fragments folder
+					})
+			);
+
+		// ====== Novel projects ======
+		new Setting(containerEl).setName("Novel projects").setHeading();
+
+		const novelProjectsContainer = containerEl.createDiv({
+			cls: "novel-projects-container",
+		});
 		this.renderNovelProjects(novelProjectsContainer);
 
 		// Button to add a new novel project
@@ -156,6 +175,35 @@ export class NovelChapterPluginSettingsTab extends PluginSettingTab {
 						this.renderNovelProjects(novelProjectsContainer); // Re-render the list
 					})
 			);
+	}
+
+	// Adds a note line to an element; returns a function that updates it for a path value
+	private addPathNote(
+		parentEl: HTMLElement,
+		kind: "folder" | "file",
+		label: string,
+	): (value: string) => void {
+		// Missing folders are created when needed (neutral note); a missing template is a real problem
+		const noteEl = parentEl.createDiv({
+			cls: kind === "file" ? "mod-warning" : "novel-path-note",
+		});
+		return (value: string) => {
+			const trimmed = value.trim();
+			const found = trimmed
+				? this.app.vault.getAbstractFileByPath(normalizePath(trimmed))
+				: null;
+			const missing =
+				trimmed !== "" &&
+				!(kind === "file" ? found instanceof TFile : found instanceof TFolder);
+			noteEl.setText(
+				!missing
+					? ""
+					: kind === "file"
+						? `${label} not found.`
+						: `${label} doesn't exist yet; it will be created when needed.`,
+			);
+			noteEl.toggle(missing);
+		};
 	}
 
 	private renderPropertySettings(containerEl: HTMLElement): void {
@@ -283,94 +331,127 @@ export class NovelChapterPluginSettingsTab extends PluginSettingTab {
 			);
 	}
 
+
+
 	// Renders the list of novel projects
 	private renderNovelProjects(containerEl: HTMLElement): void {
 		containerEl.empty(); // Clear existing content
 
+		const projects = this.plugin.settings.novelProjects;
+
 		// If no projects, show a message
-		if (this.plugin.settings.novelProjects.length === 0) {
+		if (projects.length === 0) {
 			containerEl.createEl("p", {
 				text: "No novel projects configured. Add one below.",
 			});
 		}
 
-		// Render each novel project with its settings
-		this.plugin.settings.novelProjects.forEach((project, index) => {
-			// Create a setting for each novel project
-			const projectSetting = new Setting(containerEl)
-				.setName(`Novel ${index + 1}`)
-				.setDesc(`Configuration for ${project.name || "this novel"}.`);
+		// Moves a project up or down in the list (the order the view's dropdown uses)
+		const moveProject = async (index: number, offset: number) => {
+			const target = index + offset;
+			if (target < 0 || target >= projects.length) return;
+			[projects[index], projects[target]] = [projects[target], projects[index]];
+			await this.plugin.saveSettings();
+			this.renderNovelProjects(containerEl);
+		};
 
-			// Create a vertical stack container inside the setting's control area
+		// Render each novel project with its settings
+		projects.forEach((project, index) => {
+			const projectSetting = new Setting(containerEl).setName(`Novel ${index + 1}`);
+
+			// Description: "Configuration for …" plus one note per missing folder
+			const configEl = projectSetting.descEl.createDiv();
+			const updateConfigText = () =>
+				configEl.setText(`Configuration for ${project.name || "this novel"}.`);
+			updateConfigText();
+			const updatePathNote = this.addPathNote(projectSetting.descEl, "folder", "Chapters folder");
+			const updateFragmentsNote = this.addPathNote(projectSetting.descEl, "folder", "Fragments folder");
+
+			// Vertical stack of inputs in the control area
 			const inputStack = projectSetting.controlEl.createDiv({ cls: "novel-project-input-stack" });
 
-			// Text input for the novel name
-			projectSetting.addText((text) => {
-				text
-					.setPlaceholder("Novel name (e.g., my epic saga)")
-					.setValue(project.name)
-					.onChange((value) => {
-						project.name = value.trim();
-						this.plugin.saveSettingsDebounced(); // Debounced: saves and refreshes views once typing pauses
-					});
-				// Move the input element into our vertical stack
-				inputStack.appendChild(text.inputEl);
-			});
-
-			// Text input for the folder path
-			projectSetting.addText((text) => {
-				text
-					.setPlaceholder(
-						"Folder path (e.g., novels/my-epic-saga/chapters)"
-					)
-					.setValue(project.path)
-					.onChange((value) => {
-						project.path = value.trim();
-						this.plugin.saveSettingsDebounced(); // Debounced: saves and refreshes views once typing pauses
-					});
-				// Move the input element into our vertical stack
-				inputStack.appendChild(text.inputEl);
-			});
-			
-			// Fragments path input (only when fragments are enabled)
-			if (this.plugin.settings.enableFragments) {
-				projectSetting.addText((text) => {
-					// Dynamically set default placeholder based on the main path
-					const defaultPath = project.path ? `${project.path}/Fragments` : "e.g., Novels/MyEpicSaga/Fragments";
-					
-					text
-						.setPlaceholder(defaultPath)
-						// If empty, the plugin really uses the placeholder path (<chapters path>/Fragments)
-						.setValue(project.fragmentsPath || "")
-						.onChange((value) => {
-							project.fragmentsPath = value.trim();
-							this.plugin.saveSettingsDebounced(); // Debounced: saves and refreshes views once typing pauses
-						});
-					// Move the input element into our vertical stack
-					inputStack.appendChild(text.inputEl);
+			// Novel name
+			new TextComponent(inputStack)
+				.setPlaceholder("Novel name (e.g., my epic saga)")
+				.setValue(project.name)
+				.onChange((value) => {
+					project.name = value.trim();
+					updateConfigText(); // Only the description, so the input keeps focus
+					this.plugin.saveSettingsDebounced(); // Debounced: saves and refreshes views once typing pauses
 				});
+
+			// Chapters folder
+			let fragmentsText: TextComponent | null = null; // Set below when fragments are enabled
+			const pathText = new TextComponent(inputStack)
+				.setPlaceholder("Folder path (e.g., novels/my-epic-saga/chapters)")
+				.setValue(project.path)
+				.onChange((value) => {
+					project.path = value.trim();
+					updatePathNote(value);
+					// The fragments placeholder shows the fallback, which follows this path
+					fragmentsText?.setPlaceholder(this.fragmentsPlaceholder(project.path));
+					this.plugin.saveSettingsDebounced(); // Debounced: saves and refreshes views once typing pauses
+				});
+			new FolderSuggest(this.app, pathText.inputEl);
+			updatePathNote(project.path);
+
+			// Fragments folder (only when fragments are enabled)
+			if (this.plugin.settings.enableFragments) {
+				fragmentsText = new TextComponent(inputStack)
+					.setPlaceholder(this.fragmentsPlaceholder(project.path))
+					// If empty, the plugin really uses the placeholder path (<chapters path>/Fragments)
+					.setValue(project.fragmentsPath || "")
+					.onChange((value) => {
+						project.fragmentsPath = value.trim();
+						updateFragmentsNote(value);
+						this.plugin.saveSettingsDebounced(); // Debounced: saves and refreshes views once typing pauses
+					});
+				new FolderSuggest(this.app, fragmentsText.inputEl);
+				updateFragmentsNote(project.fragmentsPath || "");
+			} else {
+				updateFragmentsNote(""); // Hidden while fragments are off
 			}
 
-			// Button to remove the novel project
-			projectSetting.addButton((button) =>
-				button
-					.setIcon("trash")
-					.setTooltip("Remove this novel project")
-					// Confirm, then remove the project (its files stay in the vault)
-					.onClick(() => {
-						new ConfirmationModal(
-							this.app,
-							`Remove the project "${project.name || "Unnamed Novel"}"? Its files stay in your vault.`,
-							() => {
-								void (async () => {
-									this.plugin.settings.novelProjects.splice(index, 1);
-									await this.plugin.saveSettings();
-									this.renderNovelProjects(containerEl); // Re-render the list
-								})();
-							},
-						).open();
-					})
-			);
+			// Reorder and remove buttons
+			projectSetting
+				.addExtraButton((button) =>
+					button
+						.setIcon("arrow-up")
+						.setTooltip("Move up")
+						.setDisabled(index === 0)
+						.onClick(() => void moveProject(index, -1))
+				)
+				.addExtraButton((button) =>
+					button
+						.setIcon("arrow-down")
+						.setTooltip("Move down")
+						.setDisabled(index === projects.length - 1)
+						.onClick(() => void moveProject(index, 1))
+				)
+				.addExtraButton((button) =>
+					button
+						.setIcon("trash")
+						.setTooltip("Remove this novel project")
+						// Confirm, then remove the project (its files stay in the vault)
+						.onClick(() => {
+							new ConfirmationModal(
+								this.app,
+								`Remove the project "${project.name || "Unnamed Novel"}"? Its files stay in your vault.`,
+								() => {
+									void (async () => {
+										projects.splice(index, 1);
+										await this.plugin.saveSettings();
+										this.renderNovelProjects(containerEl); // Re-render the list
+									})();
+								},
+							).open();
+						})
+				);
 		});
+	}
+
+	// Placeholder for the fragments folder: the fallback path the plugin uses when it's empty
+	private fragmentsPlaceholder(chaptersPath: string): string {
+		return chaptersPath ? `${chaptersPath}/Fragments` : "Fragments folder (e.g., novels/my-epic-saga/fragments)";
 	}
 }

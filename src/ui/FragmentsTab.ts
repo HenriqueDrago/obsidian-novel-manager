@@ -1,11 +1,46 @@
 // The Fragments tab: feed, search and creation box
-import { App, ButtonComponent, debounce, normalizePath, Notice, setIcon, TFile } from "obsidian";
+import {
+	App,
+	ButtonComponent,
+	debounce,
+	DropdownComponent,
+	ExtraButtonComponent,
+	Keymap,
+	normalizePath,
+	Notice,
+	SearchComponent,
+	TFile,
+} from "obsidian";
 import type NovelChapterPlugin from "../main";
-import { getFragmentsPath, getProjectFragments } from "../core/chapters";
+import { FragmentSort, getFragmentsPath, getProjectFragments } from "../core/chapters";
 import { sanitizeFileName } from "../core/utils";
 import { ChapterNameModal } from "./ChapterNameModal";
 import { ConfirmationModal } from "./ConfirmationModal";
+import { renderEmptyState } from "./emptyState";
 import type { TabContext } from "./NovelChapterView";
+
+// A fragment longer than this gets a "Show more" toggle
+const LONG_FRAGMENT_LINES = 8;
+const LONG_FRAGMENT_CHARS = 600;
+
+// Formats a timestamp relative to now (e.g. "3 hours ago")
+function relativeTime(timestamp: number): string {
+	const seconds = Math.round((timestamp - Date.now()) / 1000);
+	const units: [Intl.RelativeTimeFormatUnit, number][] = [
+		["year", 31536000],
+		["month", 2592000],
+		["week", 604800],
+		["day", 86400],
+		["hour", 3600],
+		["minute", 60],
+	];
+	const format = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
+	// Largest unit that fits; under a minute counts as "now"
+	for (const [unit, size] of units) {
+		if (Math.abs(seconds) >= size) return format.format(Math.round(seconds / size), unit);
+	}
+	return format.format(0, "second");
+}
 
 export class FragmentsTab {
 	private fragmentSearchTerm = "";
@@ -15,11 +50,28 @@ export class FragmentsTab {
 	private fragmentDraftTitle = "";
 	private fragmentDraftContent = "";
 	private feedRenderToken = 0; // Incremented per feed render; stale renders bail out
+	private expandedFragments = new Set<string>(); // Paths of long fragments opened with "Show more"
+
+	// The creation box and its save action, for the Mod+Enter hotkey
+	private contentAreaEl: HTMLTextAreaElement | null = null;
+	private saveFragment: (() => Promise<void>) | null = null;
+	private isSaving = false; // Blocks a second save while one is running
 
 	constructor(
 		private context: TabContext,
 		private fragmentsTabContainer: HTMLDivElement,
-	) {}
+	) {
+		// Registered on the view's scope: a plain keydown listener loses to global
+		// hotkeys bound to Mod+Enter (e.g. the editor's "open link in new tab")
+		context.scope.register(["Mod"], "Enter", (evt) => {
+			if (!this.saveFragment || activeDocument.activeElement !== this.contentAreaEl) {
+				return true; // Not ours; let other hotkeys handle it
+			}
+			if (evt.isComposing) return true;
+			this.saveFragment().catch(console.error);
+			return false; // Handled: prevents the line break and other hotkeys
+		});
+	}
 
 	private get app(): App {
 		return this.context.app;
@@ -33,13 +85,14 @@ export class FragmentsTab {
 		return this.context.getSelectedProjectId();
 	}
 
-	private buildProjectSelector(parentEl: HTMLElement): void {
-		this.context.buildProjectSelector(parentEl);
-	}
-
 	// Whether the tab has been built, so a refresh can update just the feed
 	get hasFeed(): boolean {
 		return this.fragmentsFeedContainer !== null;
+	}
+
+	// Focuses the creation box (used by the "Open fragments" command)
+	focusCreationBox(): void {
+		this.contentAreaEl?.focus();
 	}
 
 	// Rebuilds only the feed, keeping the search input, draft and focus
@@ -53,27 +106,28 @@ export class FragmentsTab {
 	async render() {
 		this.fragmentsTabContainer.empty();
 		this.fragmentsFeedContainer = null;
+		this.contentAreaEl = null;
+		this.saveFragment = null;
 		if (!this.plugin.settings.enableFragments) return;
 
-		// Top: Project Selector
+		// Top: Search (the project selector sits above the tabs)
 		const topControlsContainer = this.fragmentsTabContainer.createDiv({
 			cls: "fragments-top-controls",
 		});
+		const search = new SearchComponent(topControlsContainer)
+			.setPlaceholder("Search fragments...")
+			.setValue(this.fragmentSearchTerm);
 
-		const selectorWrapper = topControlsContainer.createDiv({
-			cls: "fragments-selector-container",
-		});
-		this.buildProjectSelector(selectorWrapper);
-
-		const searchWrapper = topControlsContainer.createDiv({
-			cls: "fragments-search-container",
-		});
-		const searchInput = searchWrapper.createEl("input", {
-			type: "text",
-			placeholder: "Search fragments...",
-			value: this.fragmentSearchTerm,
-			cls: "novel-chapter-search-input",
-		});
+		// Sort order, remembered across restarts
+		new DropdownComponent(topControlsContainer)
+			.addOptions({ newest: "Newest first", oldest: "Oldest first", name: "Name" })
+			.setValue(this.plugin.settings.fragmentSort)
+			.onChange((value) => {
+				this.plugin.settings.fragmentSort = value as FragmentSort;
+				// Only the feed re-sorts, so the draft and search keep focus
+				void this.plugin.saveSettings(false).then(() => this.refreshFeed());
+			})
+			.selectEl.addClass("fragments-sort-select");
 
 		// Middle: The Notes Feed (Skeleton)
 		const feedContainer = this.fragmentsTabContainer.createDiv({
@@ -87,9 +141,7 @@ export class FragmentsTab {
 			await this.buildNotesFeed(feedContainer);
 		}, 250);
 
-		searchInput.addEventListener("input", (e) => {
-			debouncedFragSearch((e.target as HTMLInputElement).value);
-		});
+		search.onChange(debouncedFragSearch); // Also fires when the clear button is used
 
 		// Bottom: Creation Box
 		const createContainer = this.fragmentsTabContainer.createDiv({
@@ -103,25 +155,39 @@ export class FragmentsTab {
 
 		const titleInput = createHeader.createEl("input", {
 			type: "text",
-			placeholder: "Fragment Title (Optional)",
+			placeholder: "Fragment title (optional)",
 		});
 
 		// Using the same ButtonComponent configuration as your New Chapter button
 		const createBtn = new ButtonComponent(createHeader)
 			.setIcon("plus")
-			.setTooltip("Save Idea (Ctrl+Enter or Cmd+Enter)")
+			.setTooltip("Save fragment (Ctrl+Enter or Cmd+Enter)")
 			.setClass("novel-chapter-new-button");
 
 		const contentArea = createContainer.createEl("textarea", {
 			attr: {
 				placeholder:
 					"Write your fragment here... (Ctrl+Enter or Cmd+Enter to save)",
+				rows: "2",
 			},
 		});
+
+		// Grows with the content (capped by max-height in CSS), shrinks when emptied
+		const autoGrow = () => {
+			contentArea.setCssProps({ height: "auto" }); // Reset first, so it can shrink
+			// scrollHeight is 0 while the tab is hidden; keep the default size then
+			if (contentArea.value && contentArea.scrollHeight > 0) {
+				contentArea.setCssProps({ height: `${contentArea.scrollHeight + 2}px` }); // +2 for the border
+			}
+		};
+		contentArea.addEventListener("input", autoGrow);
+		contentArea.addEventListener("focus", autoGrow); // Catches drafts restored while the tab was hidden
 
 		// Restore and track the unsaved draft so a tab rebuild doesn't lose it
 		titleInput.value = this.fragmentDraftTitle;
 		contentArea.value = this.fragmentDraftContent;
+		// Size the restored draft once the textarea is laid out
+		window.requestAnimationFrame(autoGrow);
 		titleInput.addEventListener("input", () => {
 			this.fragmentDraftTitle = titleInput.value;
 		});
@@ -131,11 +197,22 @@ export class FragmentsTab {
 
 		// Note Creation Logic
 		const saveIdea = async () => {
+			if (this.isSaving) return;
 			const content = contentArea.value.trim();
 			if (!content) {
 				new Notice("Cannot save an empty fragment.");
 				return;
 			}
+			this.isSaving = true;
+			try {
+				await createFragment(content);
+			} finally {
+				this.isSaving = false;
+			}
+		};
+
+		// Writes the fragment file and clears the creation box
+		const createFragment = async (content: string) => {
 
 			const currentProject = this.plugin.settings.novelProjects.find(
 				(p) => p.id === this.selectedNovelProjectId,
@@ -186,6 +263,7 @@ export class FragmentsTab {
 				contentArea.value = "";
 				this.fragmentDraftTitle = "";
 				this.fragmentDraftContent = "";
+				autoGrow();
 
 				// Re-render feed instead of whole tab to preserve focus
 				await this.buildNotesFeed(feedContainer);
@@ -198,21 +276,19 @@ export class FragmentsTab {
 		// Bind click to the save function
 		createBtn.onClick(saveIdea);
 
-		// Bind Ctrl+Enter (or Cmd+Enter) to the save function
-		contentArea.addEventListener(
-			"keydown",
-			(e) => {
-				if (
-					(e.key === "Enter" || e.code === "Enter") &&
-					(e.ctrlKey || e.metaKey)
-				) {
-					e.preventDefault(); // Prevent standard line break
-					e.stopPropagation(); // Stop Obsidian from stealing the event
-					saveIdea().catch(console.error);
-				}
-			},
-			{ capture: true },
-		);
+		// Ctrl/Cmd+Enter saves (see the scope hotkey in the constructor)
+		this.contentAreaEl = contentArea;
+		this.saveFragment = saveIdea;
+
+		// Fallback for when the view's scope isn't active
+		contentArea.addEventListener("keydown", (e) => {
+			// Already handled by a hotkey (ours or another)
+			if (e.defaultPrevented || e.isComposing) return;
+			if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+				e.preventDefault(); // No line break
+				saveIdea().catch(console.error);
+			}
+		});
 
 		// Initial load of the feed
 		await this.buildNotesFeed(feedContainer);
@@ -229,14 +305,15 @@ export class FragmentsTab {
 			: null;
 		if (!fragmentsPath) {
 			feedContainer.empty();
-			feedContainer.createEl("p", {
-				text: "No fragments path configured for this project.",
-				cls: "nav-empty-state-title",
-			});
+			renderEmptyState(feedContainer, "No fragments path configured for this project.");
 			return;
 		}
 
-		const fragments = getProjectFragments(this.app, fragmentsPath);
+		const fragments = getProjectFragments(
+			this.app,
+			fragmentsPath,
+			this.plugin.settings.fragmentSort,
+		);
 		const searchTermLower = this.fragmentSearchTerm.toLowerCase();
 
 		// Read everything first, so overlapping renders can't duplicate fragments
@@ -258,119 +335,83 @@ export class FragmentsTab {
 		feedContainer.empty();
 
 		if (fragments.length === 0) {
-			feedContainer.createEl("p", {
-				text: "No fragments found. Write your first idea below!",
-				cls: "nav-empty-state-title",
-			});
+			renderEmptyState(feedContainer, "No fragments yet. Write your first idea below!");
 			return;
 		}
 
 		if (entries.length === 0) {
-			feedContainer.createEl("p", {
-				text: `No fragments found matching "${this.fragmentSearchTerm}".`,
-				cls: "nav-empty-state-title",
-			});
+			renderEmptyState(
+				feedContainer,
+				`No fragments match "${this.fragmentSearchTerm}".`,
+			);
 			return;
 		}
 
 		for (const { file, content } of entries) {
+			this.renderFragment(feedContainer, file, content);
+		}
+	}
 
-			const blockContainer = feedContainer.createDiv({
-				cls: "fragment-block",
+	// Renders one fragment block: header (title, date, actions) and content
+	private renderFragment(feedContainer: HTMLElement, file: TFile, content: string) {
+		const blockContainer = feedContainer.createDiv({
+			cls: "fragment-block",
+		});
+
+		// Header Area
+		const headerEl = blockContainer.createDiv({
+			cls: "fragment-header",
+		});
+		const titleWrapper = headerEl.createDiv({ cls: "fragment-title-wrapper" });
+
+		// Title opens the fragment; Ctrl/Cmd-click opens it in a new tab
+		const titleEl = titleWrapper.createEl("a", {
+			text: file.basename,
+			href: "#",
+			cls: "fragment-title",
+		});
+		titleEl.addEventListener("click", (ev) => {
+			ev.preventDefault();
+			this.app.workspace
+				.openLinkText(file.path, "", Keymap.isModEvent(ev))
+				.catch(console.error);
+		});
+		// Middle-click also opens a new tab
+		titleEl.addEventListener("auxclick", (ev) => {
+			if (ev.button !== 1) return;
+			ev.preventDefault();
+			this.app.workspace.openLinkText(file.path, "", "tab").catch(console.error);
+		});
+
+		// Modified date, relative, with the full date as tooltip
+		titleWrapper.createDiv({
+			text: relativeTime(file.stat.mtime),
+			cls: "fragment-date",
+			attr: { "aria-label": new Date(file.stat.mtime).toLocaleString() },
+		});
+
+		const actionsEl = headerEl.createDiv({ cls: "fragment-actions" });
+
+		new ExtraButtonComponent(actionsEl)
+			.setIcon("copy")
+			.setTooltip("Copy")
+			.onClick(() => {
+				void (async () => {
+					const contentToCopy = await this.app.vault.cachedRead(file);
+					await navigator.clipboard.writeText(contentToCopy);
+					new Notice("Fragment copied to clipboard!");
+				})();
 			});
 
-			// Header Area
-			const headerEl = blockContainer.createDiv({
-				cls: "fragment-header",
-			});
-			headerEl.createEl("h4", {
-				text: file.basename,
-				cls: "fragment-title",
-			});
+		new ExtraButtonComponent(actionsEl)
+			.setIcon("pencil")
+			.setTooltip("Rename")
+			.onClick(() => this.promptAndRenameFragment(file));
 
-			const actionsEl = headerEl.createDiv({ cls: "fragment-actions" });
-
-			const openBtn = actionsEl.createEl("button", {
-				cls: "clickable-icon",
-			});
-			setIcon(openBtn, "file-symlink");
-			openBtn.onclick = async () => {
-				const leaf = this.app.workspace.getLeaf("tab");
-				await leaf.openFile(file);
-			};
-
-			const copyBtn = actionsEl.createEl("button", {
-				cls: "clickable-icon",
-			});
-			setIcon(copyBtn, "copy");
-			copyBtn.onclick = async () => {
-				const contentToCopy = await this.app.vault.cachedRead(file);
-				await navigator.clipboard.writeText(contentToCopy);
-				new Notice("Fragment copied to clipboard!");
-			};
-
-			const editBtn = actionsEl.createEl("button", {
-				cls: "clickable-icon",
-			});
-			setIcon(editBtn, "pencil");
-			editBtn.onclick = () => {
-				new ChapterNameModal(
-					this.app,
-					"Rename Fragment",
-					"Rename",
-					file.basename,
-					(newName) => {
-						const sanitized = sanitizeFileName(newName)
-							.trim();
-						if (!sanitized) {
-							new Notice("Invalid fragment name provided.");
-							return;
-						}
-						if (sanitized === file.basename) return;
-
-						// Files at the vault root have parent path "/", which must not be prefixed
-						const parentPath = file.parent?.path ?? "/";
-						const newPath = normalizePath(
-							parentPath === "/"
-								? `${sanitized}.md`
-								: `${parentPath}/${sanitized}.md`,
-						);
-
-						void (async () => {
-							// Case-only renames "exist" on case-insensitive file systems
-							const isCaseOnlyRename =
-								newPath.toLowerCase() === file.path.toLowerCase();
-							if (
-								!isCaseOnlyRename &&
-								(await this.app.vault.adapter.exists(newPath))
-							) {
-								new Notice(
-									`A fragment named "${sanitized}" already exists.`,
-								);
-								return;
-							}
-							try {
-								await this.app.fileManager.renameFile(
-									file,
-									newPath,
-								);
-								await this.refreshFeed();
-							} catch (error) {
-								console.error("Error renaming fragment:", error);
-								new Notice(
-									"Failed to rename fragment. See console for details.",
-								);
-							}
-						})();
-					},
-				).open();
-			};
-
-			const deleteBtn = actionsEl.createEl("button", {
-				cls: "clickable-icon",
-			});
-			setIcon(deleteBtn, "trash");
-			deleteBtn.onclick = () => {
+		new ExtraButtonComponent(actionsEl)
+			.setIcon("trash")
+			.setTooltip("Delete")
+			.onClick(() => {
 				new ConfirmationModal(
 					this.app,
 					`Delete fragment "${file.basename}"?`,
@@ -381,13 +422,88 @@ export class FragmentsTab {
 						})();
 					},
 				).open();
-			};
-
-			// Text Content Area
-			const textContainer = blockContainer.createDiv({
-				cls: "fragment-content",
 			});
-			textContainer.createEl("pre", { text: content });
-		}
+
+		// Text Content Area
+		const textContainer = blockContainer.createDiv({
+			cls: "fragment-content",
+		});
+		textContainer.createEl("pre", { text: content });
+
+		// Long fragments are cut off with a "Show more" toggle
+		// Judged by content, not height: the tab may be hidden (height 0) while rendering
+		const isLong =
+			content.length > LONG_FRAGMENT_CHARS ||
+			content.split("\n").length > LONG_FRAGMENT_LINES;
+		if (!isLong) return;
+
+		const toggleEl = blockContainer.createEl("a", {
+			href: "#",
+			cls: "fragment-show-more",
+		});
+		const applyExpanded = (expanded: boolean) => {
+			textContainer.toggleClass("is-collapsed", !expanded);
+			toggleEl.setText(expanded ? "Show less" : "Show more");
+		};
+		applyExpanded(this.expandedFragments.has(file.path));
+		toggleEl.addEventListener("click", (ev) => {
+			ev.preventDefault();
+			// Remembered by path, so it stays open across feed refreshes
+			const expanded = !this.expandedFragments.has(file.path);
+			if (expanded) this.expandedFragments.add(file.path);
+			else this.expandedFragments.delete(file.path);
+			applyExpanded(expanded);
+		});
+	}
+
+	// Asks for a new name, then renames the fragment
+	private promptAndRenameFragment(file: TFile) {
+		new ChapterNameModal(
+			this.app,
+			"Rename fragment",
+			"Rename",
+			file.basename,
+			(newName) => {
+				const sanitized = sanitizeFileName(newName).trim();
+				if (!sanitized) {
+					new Notice("Invalid fragment name provided.");
+					return;
+				}
+				if (sanitized === file.basename) return;
+
+				// Files at the vault root have parent path "/", which must not be prefixed
+				const parentPath = file.parent?.path ?? "/";
+				const newPath = normalizePath(
+					parentPath === "/"
+						? `${sanitized}.md`
+						: `${parentPath}/${sanitized}.md`,
+				);
+
+				void (async () => {
+					// Case-only renames "exist" on case-insensitive file systems
+					const isCaseOnlyRename =
+						newPath.toLowerCase() === file.path.toLowerCase();
+					if (
+						!isCaseOnlyRename &&
+						(await this.app.vault.adapter.exists(newPath))
+					) {
+						new Notice(
+							`A fragment named "${sanitized}" already exists.`,
+						);
+						return;
+					}
+					try {
+						await this.app.fileManager.renameFile(file, newPath);
+						await this.refreshFeed();
+					} catch (error) {
+						console.error("Error renaming fragment:", error);
+						new Notice(
+							"Failed to rename fragment. See console for details.",
+						);
+					}
+				})();
+			},
+			"Fragment name",
+		).open();
 	}
 }

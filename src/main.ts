@@ -81,6 +81,50 @@ export default class NovelChapterPlugin extends Plugin {
 			},
 		});
 
+		// Commands to open a specific tab of the view
+		this.addCommand({
+			id: "open-chapters-tab",
+			name: "Open chapters",
+			callback: () => {
+				void this.activateView().then((view) => view?.showTab("chapters"));
+			},
+		});
+		this.addCommand({
+			id: "open-fragments-tab",
+			name: "Open fragments",
+			checkCallback: (checking: boolean) => {
+				if (!this.settings.enableFragments) return false;
+				if (!checking) {
+					// Focuses the text box, ready to type
+					void this.activateView().then((view) => view?.focusFragmentBox());
+				}
+				return true;
+			},
+		});
+
+		// Command to scroll the view to the open chapter
+		this.addCommand({
+			id: "reveal-current-chapter",
+			name: "Reveal current chapter in view",
+			checkCallback: (checking: boolean) => {
+				const file = this.app.workspace.getActiveFile();
+				if (!file || !findProjectForFile(this.settings, file)) return false;
+				if (!checking) {
+					void this.activateView().then((view) => view?.revealChapter(file));
+				}
+				return true;
+			},
+		});
+
+		// Follow and highlight the open chapter in every open view
+		this.registerEvent(
+			this.app.workspace.on("file-open", (file) => {
+				this.getViews().forEach((view) => {
+					view.onFileOpen(file).catch(console.error);
+				});
+			}),
+		);
+
 		// Add a ribbon icon to open the Novel Chapter view
 		this.addRibbonIcon("list-ordered", "Open novel chapter view", () =>
 			this.activateView().catch(console.error),
@@ -141,21 +185,17 @@ export default class NovelChapterPlugin extends Plugin {
 	}
 
 	// Saves the plugin settings to storage
-	async saveSettings() {
+	async saveSettings(refresh = true) {
 		await this.saveData(this.settings);
-		this.refreshNovelChapterView(true);
+		// Skipped when the caller redraws on its own (e.g. switching projects)
+		if (refresh) this.refreshNovelChapterView(true);
 	}
 
 	// Refreshes all Novel Chapter views in the workspace
 	refreshNovelChapterView(settingsChanged = false) {
-		this.app.workspace
-			.getLeavesOfType(VIEW_TYPE) // Get all leaves of the Novel Chapter view type
-			// Iterate through each leaf to update its view
-			.forEach((leaf) => {
-				if (leaf.view instanceof NovelChapterView) {
-					leaf.view.updateView(settingsChanged).catch(console.error);
-				}
-			});
+		this.getViews().forEach((view) => {
+			view.updateView(settingsChanged).catch(console.error);
+		});
 	}
 
 	// Handles file changes (creation, modification, deletion, renaming)
@@ -177,8 +217,16 @@ export default class NovelChapterPlugin extends Plugin {
 		if (isRelevantChange) this.requestViewRefresh();
 	}
 
-	// Activates the Novel Chapter view
-	async activateView() {
+	// Open Novel Manager views (deferred, not-yet-loaded leaves are skipped)
+	private getViews(): NovelChapterView[] {
+		return this.app.workspace
+			.getLeavesOfType(VIEW_TYPE)
+			.map((leaf) => leaf.view)
+			.filter((view): view is NovelChapterView => view instanceof NovelChapterView);
+	}
+
+	// Activates the Novel Chapter view and returns it
+	async activateView(): Promise<NovelChapterView | null> {
 		const { workspace } = this.app; // Get the workspace instance
 
 		// If the Novel Chapter view is already open, reveal it
@@ -197,6 +245,8 @@ export default class NovelChapterPlugin extends Plugin {
 				active: true,
 			});
 		}
-		workspace.revealLeaf(leaf).catch(console.error); // Reveal the leaf in the workspace
+		// Revealing also loads a deferred view, so leaf.view is the real view afterwards
+		await workspace.revealLeaf(leaf);
+		return leaf.view instanceof NovelChapterView ? leaf.view : null;
 	}
 }

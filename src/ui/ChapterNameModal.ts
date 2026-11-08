@@ -7,6 +7,7 @@ export class ChapterNameModal extends Modal {
 	private initialValue: string; // Initial value for the input field
 	private modalTitle: string; // Title of the modal
 	private ctaButtonText: string; // Text for the call-to-action button
+	private placeholder: string; // Placeholder for the name input
 
 	constructor(
 		app: App,
@@ -14,12 +15,14 @@ export class ChapterNameModal extends Modal {
 		ctaText: string,
 		initialValue: string,
 		onSubmit: (result: string) => void,
+		placeholder = "Chapter name",
 	) {
 		super(app);
 		this.modalTitle = title;
 		this.ctaButtonText = ctaText;
 		this.initialValue = initialValue;
 		this.onSubmit = onSubmit;
+		this.placeholder = placeholder;
 	}
 
 	// When opened, display the modal with input field and buttons
@@ -35,7 +38,7 @@ export class ChapterNameModal extends Modal {
 		});
 		// Create a text input field for the chapter name
 		const textInput = new TextComponent(inputContainer)
-			.setPlaceholder("Chapter name")
+			.setPlaceholder(this.placeholder)
 			.setValue(this.initialValue);
 		textInput.inputEl.addClass("modal-text-input");
 		textInput.inputEl.focus(); // Focus the input field when the modal opens
@@ -58,7 +61,7 @@ export class ChapterNameModal extends Modal {
 				this.close();
 				this.onSubmit(this.result);
 			} else {
-				new Notice("Chapter name cannot be empty.");
+				new Notice("Name cannot be empty.");
 			}
 		};
 

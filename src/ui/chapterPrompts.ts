@@ -1,11 +1,13 @@
 // Chapter dialogs: ask the user, then call core/chapters
 import { App, Notice, TFile, TFolder } from "obsidian";
-import { NovelChapterPluginSettings } from "../settings";
+import { NovelChapterPluginSettings, NovelProject } from "../settings";
 import {
 	createChapter,
 	deleteChapter,
 	getActiveChapterFolder,
 	getChapterFolderOptions,
+	getNewFolderStatus,
+	moveChapterToNewFolder,
 	renameChapter,
 	renameChapterFolder,
 } from "../core/chapters";
@@ -82,6 +84,42 @@ export async function promptAndCreateNewChapter(
 		},
 		// Otherwise the folder of the chapter you're in, if it belongs to this project
 		defaultFolderPath ?? getActiveChapterFolder(app, settings, currentNovelProject),
+	).open();
+}
+
+// Asks for a folder name, then moves the chapter into that new subfolder
+export function promptAndMoveChapterToNewFolder(
+	app: App,
+	settings: NovelChapterPluginSettings,
+	project: NovelProject,
+	file: TFile,
+): void {
+	new ChapterNameModal(
+		app,
+		"Move to new folder",
+		"Move",
+		"",
+		(folderName) => {
+			moveChapterToNewFolder(app, settings, project, file, folderName)
+				.catch(console.error);
+		},
+		"Folder name",
+		(value) => {
+			const name = value.trim();
+			const otherName = settings.otherGroupName || "Other";
+			switch (getNewFolderStatus(app, settings, project, value)) {
+				case "exists":
+					return `Folder "${name}" already exists. The chapter will be moved into it.`;
+				case "other-name":
+					return `"${otherName}" is the group for chapters directly in the project folder. This folder is separate and shows as "${name} (folder)".`;
+				case "fragments":
+					return "That's the fragments folder.";
+				case "invalid":
+					return name ? "Invalid folder name." : null; // Nothing typed yet: no warning
+				default:
+					return null; // New folder, or nothing typed yet
+			}
+		},
 	).open();
 }
 

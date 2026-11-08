@@ -19,12 +19,14 @@ import {
 	getChapterFolderOptions,
 	getGroupFolderPath,
 	getProjectChapters,
+	getGroupDisplayName,
 	moveChapter,
 	openAdjacentChapter,
 } from "../core/chapters";
 import {
 	promptAndCreateNewChapter,
 	promptAndDeleteChapter,
+	promptAndMoveChapterToNewFolder,
 	promptAndRenameChapter,
 	promptAndRenameChapterFolder,
 } from "./chapterPrompts";
@@ -369,8 +371,6 @@ export class ChaptersTab {
 			return;
 		}
 
-		const OTHER_GROUP_NAME = this.plugin.settings.otherGroupName || "Other"; // Display name for the "Other" group
-
 		// Split into groups by first-level subfolder (chapterFiles is already sorted)
 		const groups: { key: string; name: string; files: TFile[] }[] = [];
 		for (const file of chapterFiles) {
@@ -379,7 +379,7 @@ export class ChaptersTab {
 			if (!group || group.key !== key) {
 				group = {
 					key,
-					name: key === OTHER_GROUP_KEY ? OTHER_GROUP_NAME : key,
+					name: getGroupDisplayName(this.plugin.settings, key),
 					files: [],
 				};
 				groups.push(group);
@@ -608,6 +608,22 @@ export class ChaptersTab {
 									subfolderOptions.forEach((option) =>
 										addFolderItem(option, "folder"),
 									);
+
+									// Ask for a name, create the subfolder and move there
+									folderMenu.addSeparator();
+									folderMenu.addItem((subitem: MenuItem) => {
+										subitem
+											.setTitle("New folder...")
+											.setIcon("folder-plus")
+											.onClick(() => {
+												promptAndMoveChapterToNewFolder(
+													this.app,
+													this.plugin.settings,
+													currentNovelProject,
+													file,
+												);
+											});
+									});
 
 									// Show the new menu at the location of the original click
 									folderMenu.showAtMouseEvent(ev);

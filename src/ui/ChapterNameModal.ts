@@ -8,6 +8,7 @@ export class ChapterNameModal extends Modal {
 	private modalTitle: string; // Title of the modal
 	private ctaButtonText: string; // Text for the call-to-action button
 	private placeholder: string; // Placeholder for the name input
+	private getNote?: (value: string) => string | null; // Warning shown under the input while typing
 
 	constructor(
 		app: App,
@@ -16,6 +17,7 @@ export class ChapterNameModal extends Modal {
 		initialValue: string,
 		onSubmit: (result: string) => void,
 		placeholder = "Chapter name",
+		getNote?: (value: string) => string | null,
 	) {
 		super(app);
 		this.modalTitle = title;
@@ -23,6 +25,7 @@ export class ChapterNameModal extends Modal {
 		this.initialValue = initialValue;
 		this.onSubmit = onSubmit;
 		this.placeholder = placeholder;
+		this.getNote = getNote;
 	}
 
 	// When opened, display the modal with input field and buttons
@@ -42,6 +45,19 @@ export class ChapterNameModal extends Modal {
 			.setValue(this.initialValue);
 		textInput.inputEl.addClass("modal-text-input");
 		textInput.inputEl.focus(); // Focus the input field when the modal opens
+
+		// Optional live warning about what the typed name will do
+		if (this.getNote) {
+			const getNote = this.getNote;
+			const noteEl = contentEl.createDiv({ cls: "mod-warning novel-modal-note" });
+			const updateNote = () => {
+				const note = getNote(textInput.getValue());
+				noteEl.setText(note ?? "");
+				noteEl.toggle(note !== null);
+			};
+			textInput.onChange(updateNote);
+			updateNote();
+		}
 
 		const buttonContainer = contentEl.createDiv({
 			cls: "modal-button-container",

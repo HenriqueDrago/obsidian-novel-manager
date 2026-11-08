@@ -472,3 +472,9 @@
 	min-width: 110px;
 }
 
+
+/* Warning under the name input in dialogs */
+.novel-modal-note {
+	margin-top: var(--size-4-2);
+	font-size: var(--font-ui-small);
+}

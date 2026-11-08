@@ -140,6 +140,71 @@ export async function moveChapter(
 	}
 }
 
+// Display name of a chapter group; a subfolder named like "Other" is marked so the two differ
+export function getGroupDisplayName(
+	settings: NovelChapterPluginSettings,
+	groupKey: string,
+): string {
+	const otherName = settings.otherGroupName || "Other";
+	if (groupKey === OTHER_GROUP_KEY) return otherName;
+	return groupKey.trim().toLowerCase() === otherName.trim().toLowerCase()
+		? `${groupKey} (folder)`
+		: groupKey;
+}
+
+// What a typed new-folder name would do, for the dialog's warning
+export type NewFolderStatus = "new" | "invalid" | "fragments" | "other-name" | "exists";
+export function getNewFolderStatus(
+	app: App,
+	settings: NovelChapterPluginSettings,
+	project: NovelProject,
+	folderName: string,
+): NewFolderStatus {
+	const sanitized = sanitizeFileName(folderName).trim();
+	if (!sanitized || sanitized === "." || sanitized === "..") return "invalid";
+	const folderPath = normalizePath(`${project.path}/${sanitized}`);
+	if (folderPath === getFragmentsPath(settings, project)) return "fragments";
+	// Same name as the "Other" group: shown marked, as "<name> (folder)"
+	if (getGroupDisplayName(settings, sanitized) !== sanitized) return "other-name";
+	if (app.vault.getAbstractFileByPath(folderPath) instanceof TFolder) return "exists";
+	return "new";
+}
+
+// Moves a chapter into a subfolder of the project folder, creating it if needed
+export async function moveChapterToNewFolder(
+	app: App,
+	settings: NovelChapterPluginSettings,
+	project: NovelProject,
+	file: TFile,
+	folderName: string,
+): Promise<void> {
+	const sanitized = sanitizeFileName(folderName).trim();
+	// "." and ".." would point at the project folder or above it
+	if (!sanitized || sanitized === "." || sanitized === "..") {
+		new Notice("Invalid folder name.");
+		return;
+	}
+	const folderPath = normalizePath(`${project.path}/${sanitized}`);
+
+	// Chapters in the fragments folder would vanish from the list
+	if (folderPath === getFragmentsPath(settings, project)) {
+		new Notice("That's the fragments folder.");
+		return;
+	}
+
+	// An existing folder (e.g. another group's) is simply moved into
+	if (!(await app.vault.adapter.exists(folderPath))) {
+		try {
+			await app.vault.createFolder(folderPath);
+		} catch (error) {
+			console.error("Error creating chapter folder:", error);
+			new Notice(`Failed to create folder "${folderPath}".`);
+			return;
+		}
+	}
+	await moveChapter(app, file, folderPath);
+}
+
 // Helper to find which project a file belongs to (as a chapter, or also as a fragment)
 export function findProjectForFile(
 	settings: NovelChapterPluginSettings,
@@ -368,7 +433,7 @@ export function getChapterFolderOptions(
 
 	// The first option is always the project's root folder (other group)
 	folderOptions.push({
-		name: settings.otherGroupName || "Other",
+		name: getGroupDisplayName(settings, OTHER_GROUP_KEY),
 		path: projectRootPath,
 	});
 
@@ -381,7 +446,7 @@ export function getChapterFolderOptions(
 			) {
 				// Add each subfolder (except the fragments folder) to our list of options.
 				folderOptions.push({
-					name: child.name,
+					name: getGroupDisplayName(settings, child.name),
 					path: child.path,
 				});
 			}

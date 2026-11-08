@@ -1,4 +1,4 @@
-import { App, ItemView, Scope, TFile, WorkspaceLeaf } from "obsidian";
+import { App, HoverPopover, ItemView, Scope, TFile, WorkspaceLeaf } from "obsidian";
 import type NovelChapterPlugin from "../main";
 import {
 	findProjectForFile,
@@ -19,6 +19,7 @@ export interface TabContext {
 	plugin: NovelChapterPlugin;
 	scope: Scope; // The view's hotkey scope, checked before global hotkeys
 	getSelectedProjectId(): string | null;
+	showHoverPreview(ev: MouseEvent, targetEl: HTMLElement, file: TFile): void; // Page preview on hover
 }
 
 type TabName = "chapters" | "fragments";
@@ -26,6 +27,7 @@ type TabName = "chapters" | "fragments";
 // The sidebar view: project selector, tab bar, and deciding what to redraw
 export class NovelChapterView extends ItemView {
 	plugin: NovelChapterPlugin; // Reference to the plugin instance
+	hoverPopover: HoverPopover | null = null; // Makes the view a hover parent for page previews
 
 	// Layout Containers
 	projectSelectorContainer!: HTMLDivElement;
@@ -114,6 +116,16 @@ export class NovelChapterView extends ItemView {
 			plugin: this.plugin,
 			scope: this.scope as Scope, // Set in the constructor
 			getSelectedProjectId: () => this.selectedNovelProjectId,
+			showHoverPreview: (ev, targetEl, file) => {
+				// Obsidian's page preview; whether Ctrl is needed is set in Settings > Page preview
+				this.app.workspace.trigger("hover-link", {
+					event: ev,
+					source: VIEW_TYPE,
+					hoverParent: this,
+					targetEl,
+					linktext: file.path,
+				});
+			},
 		};
 		this.chaptersTab = new ChaptersTab(
 			context,

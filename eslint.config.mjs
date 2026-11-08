@@ -43,7 +43,7 @@ export default [
       "obsidianmd/ui/sentence-case": [
         "warn",
         {
-          brands: ["Obsidian"],
+          brands: ["Obsidian", "Novel Manager"],
           acronyms: ["ID", "URL", "UI"],
           enforceCamelCaseLower: true,
         },

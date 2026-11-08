@@ -119,6 +119,21 @@ export class NovelChapterPluginSettingsTab extends PluginSettingTab {
 					})
 			);
 
+		// Create setting for the reveal option in Obsidian's file menus
+		new Setting(containerEl)
+			.setName("Reveal option in file menus")
+			.setDesc(
+				"Add a reveal option to a chapter's menu in the file explorer and tab header."
+			)
+			.addToggle((toggle) =>
+				toggle
+					.setValue(this.plugin.settings.revealInFileMenu)
+					.onChange(async (value) => {
+						this.plugin.settings.revealInFileMenu = value;
+						await this.plugin.saveSettings(false); // Read when a menu opens; nothing to redraw
+					})
+			);
+
 		// ====== Property column ======
 		new Setting(containerEl).setName("Property column").setHeading();
 

@@ -1,5 +1,5 @@
 // Plugin entry point: commands, events and settings storage
-import { debounce, normalizePath, Notice, Plugin, TFile, WorkspaceLeaf } from "obsidian";
+import { debounce, normalizePath, Notice, Plugin, TAbstractFile, TFile, WorkspaceLeaf } from "obsidian";
 import { InternalNovelChapterPluginSettings, normalizeSettings } from "./settings";
 import {
 	findProjectForFile,
@@ -116,6 +116,28 @@ export default class NovelChapterPlugin extends Plugin {
 			},
 		});
 
+		// Page previews from the view (listed under Settings > Page preview)
+		this.registerHoverLinkSource(VIEW_TYPE, {
+			display: "Novel Manager",
+			defaultMod: true,
+		});
+
+		// "Reveal in Novel Manager" in the file explorer and tab header menus
+		this.registerEvent(
+			this.app.workspace.on("file-menu", (menu, file) => {
+				if (!this.settings.revealInFileMenu) return;
+				if (!(file instanceof TFile) || !findProjectForFile(this.settings, file)) return;
+				menu.addItem((item) =>
+					item
+						.setTitle("Reveal in Novel Manager")
+						.setIcon("list-ordered")
+						.onClick(() => {
+							void this.activateView().then((view) => view?.revealChapter(file));
+						}),
+				);
+			}),
+		);
+
 		// Follow and highlight the open chapter in every open view
 		this.registerEvent(
 			this.app.workspace.on("file-open", (file) => {
@@ -140,18 +162,18 @@ export default class NovelChapterPlugin extends Plugin {
 		// Structural changes: creation, deletion and renames/moves
 		this.registerEvent(
 			this.app.vault.on("create", (file) => {
-				if (file instanceof TFile) this.handleFileChange(file);
+				this.handleFileChange(file); // Folders too, so empty folders show as groups
 			}),
 		);
 		this.registerEvent(
 			this.app.vault.on("delete", (file) => {
-				if (file instanceof TFile) this.handleFileChange(file);
+				this.handleFileChange(file);
 			}),
 		);
 		this.registerEvent(
 			this.app.vault.on("rename", (file, oldPath) => {
 				// Pass oldPath so moving a chapter *out* of a project still refreshes
-				if (file instanceof TFile) this.handleFileChange(file, oldPath);
+				this.handleFileChange(file, oldPath);
 			}),
 		);
 	}
@@ -199,8 +221,8 @@ export default class NovelChapterPlugin extends Plugin {
 	}
 
 	// Handles file changes (creation, modification, deletion, renaming)
-	private handleFileChange(file: TFile, oldPath?: string) {
-		if (file.extension !== "md") return; // Ignore non-markdown files
+	private handleFileChange(file: TAbstractFile, oldPath?: string) {
+		if (file instanceof TFile && file.extension !== "md") return; // Ignore non-markdown files (folders pass)
 
 		const paths = [normalizePath(file.path)];
 		if (oldPath) paths.push(normalizePath(oldPath));

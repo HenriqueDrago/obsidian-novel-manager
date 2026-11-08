@@ -376,6 +376,10 @@ export class FragmentsTab {
 				.openLinkText(file.path, "", Keymap.isModEvent(ev))
 				.catch(console.error);
 		});
+		// Page preview on hover (Ctrl/Cmd by default)
+		titleEl.addEventListener("mouseover", (ev) => {
+			this.context.showHoverPreview(ev, titleEl, file);
+		});
 		// Middle-click also opens a new tab
 		titleEl.addEventListener("auxclick", (ev) => {
 			if (ev.button !== 1) return;

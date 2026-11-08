@@ -26,6 +26,7 @@ export interface NovelChapterPluginSettings {
 	excludeOtherFromCount: boolean; // Whether to exclude "Other" from total count
 	followActiveChapter: boolean; // Switch the view to the project of the file you open
 	dragToMove: boolean; // Drag chapter rows onto another group to move them (desktop)
+	revealInFileMenu: boolean; // "Reveal in Novel Manager" in Obsidian's file menus
 }
 
 // Define the default settings
@@ -49,6 +50,7 @@ export const DEFAULT_SETTINGS: NovelChapterPluginSettings = {
 	excludeOtherFromCount: false, // Default to including "Other" in counts
 	followActiveChapter: false,
 	dragToMove: true,
+	revealInFileMenu: true,
 };
 
 // Settings plus internal state that isn't shown in the settings tab
@@ -90,6 +92,9 @@ export function normalizeSettings(
 	}
 	if (typeof settings.dragToMove !== "boolean") {
 		settings.dragToMove = true;
+	}
+	if (typeof settings.revealInFileMenu !== "boolean") {
+		settings.revealInFileMenu = true;
 	}
 	if (!FRAGMENT_SORTS.includes(settings.fragmentSort)) {
 		settings.fragmentSort = "newest";

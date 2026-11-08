@@ -32,7 +32,7 @@ import {
 	promptAndRenameChapterFolder,
 } from "./chapterPrompts";
 import { buildOptions, checkboxState, filterMatches } from "../core/property";
-import { getChapterGroupKey, OTHER_GROUP_KEY } from "../core/utils";
+import { getChapterGroupKey, naturalCompare, OTHER_GROUP_KEY } from "../core/utils";
 import type { TabContext } from "./NovelChapterView";
 import { renderPropertyCheckbox, renderPropertyDropdown } from "./PropertyCell";
 import { renderEmptyState } from "./emptyState";
@@ -323,8 +323,18 @@ export class ChaptersTab {
 		}
 		let chapterFiles = getProjectChapters(this.app, this.plugin.settings, currentNovelProject);
 
-		// No chapters at all (before filtering)
-		if (chapterFiles.length === 0) {
+		// First-level subfolders (fragments folder excluded), so empty ones still show as groups
+		const subfolderKeys = getChapterFolderOptions(
+			this.app,
+			this.plugin.settings,
+			currentNovelProject,
+		)
+			.slice(1) // The first option is the project folder ("Other")
+			.map((option) => option.path.substring(normalizedChaptersFolderPath.length + 1));
+		const isFiltering = this.filterValue !== "all" || this.searchTerm !== "";
+
+		// No chapters and no folders to show
+		if (chapterFiles.length === 0 && subfolderKeys.length === 0) {
 			renderEmptyState(this.tableContainer, "No chapters yet.", {
 				label: "New chapter",
 				onClick: () => this.newChapter(),
@@ -362,8 +372,8 @@ export class ChaptersTab {
 			);
 		}
 
-		// Chapters exist, but the search or filter hides them all
-		if (chapterFiles.length === 0) {
+		// The search or filter hides every chapter
+		if (chapterFiles.length === 0 && isFiltering) {
 			renderEmptyState(
 				this.tableContainer,
 				"No chapters match your search or filter.",
@@ -394,6 +404,25 @@ export class ChaptersTab {
 				groups.push(group);
 			}
 			group.files.push(file);
+		}
+		// Empty subfolders as "(0)" groups, so they can be dropped on and right-clicked
+		// (not while filtering, where they'd only be clutter)
+		if (!isFiltering) {
+			const existingKeys = new Set(groups.map((g) => g.key));
+			for (const key of subfolderKeys) {
+				if (existingKeys.has(key)) continue;
+				groups.push({
+					key,
+					name: getGroupDisplayName(this.plugin.settings, key),
+					files: [],
+				});
+			}
+			// Same order as sortChapters: subfolders naturally, "Other" last
+			groups.sort((a, b) => {
+				if (a.key === OTHER_GROUP_KEY) return 1;
+				if (b.key === OTHER_GROUP_KEY) return -1;
+				return naturalCompare(a.key, b.key);
+			});
 		}
 		this.currentGroupKeys = groups.map((g) => g.key);
 		this.updateToggleGroupsButton();
@@ -529,6 +558,11 @@ export class ChaptersTab {
 					});
 					this.attachDropTarget(row, group.key, currentNovelProject);
 				}
+
+				// Page preview on hover (Ctrl/Cmd by default)
+				chapterLink.addEventListener("mouseover", (ev) => {
+					this.context.showHoverPreview(ev, chapterLink, file);
+				});
 
 				// Open the chapter; Ctrl/Cmd-click opens it in a new tab
 				chapterLink.addEventListener("click", (ev) => {

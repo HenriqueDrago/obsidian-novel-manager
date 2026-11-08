@@ -491,3 +491,59 @@
 	margin-top: var(--size-4-2);
 	font-size: var(--font-ui-small);
 }
+
+/* "New folder" drop zone, shown below the table while a chapter is dragged */
+.novel-new-folder-dropzone {
+	display: none;
+	position: sticky; /* Stays in sight at the bottom of long lists */
+	bottom: 0;
+	align-items: center;
+	justify-content: center;
+	gap: var(--size-4-2);
+	margin-top: var(--size-4-2);
+	padding: var(--size-4-3);
+	border: 2px dashed var(--background-modifier-border);
+	border-radius: var(--radius-m);
+	background-color: var(--background-primary); /* Opaque, rows scroll underneath */
+	color: var(--text-muted);
+	z-index: 2;
+}
+.is-dragging-chapter .novel-new-folder-dropzone {
+	display: flex;
+}
+.novel-new-folder-dropzone.is-drop-target {
+	border-color: var(--interactive-accent);
+	background-color: color-mix(in srgb, var(--interactive-accent) 15%, var(--background-primary));
+	color: var(--text-normal);
+}
+.novel-new-folder-dropzone-icon {
+	display: flex;
+}
+
+/* Keyboard navigation: the selected item shows a focus ring while the table has focus */
+.novel-chapter-table-container:focus-visible,
+.novel-chapter-table tr:focus {
+	outline: none;
+}
+.novel-chapter-table-container:focus-within tr.is-selected td {
+	--novel-focus-ring: var(--background-modifier-border-focus);
+	/* Top and bottom on every cell, sides on the outer cells, so the ring wraps the row */
+	box-shadow:
+		inset 0 2px 0 var(--novel-focus-ring),
+		inset 0 -2px 0 var(--novel-focus-ring);
+}
+.novel-chapter-table-container:focus-within tr.is-selected td:first-child {
+	box-shadow:
+		inset 2px 0 0 var(--novel-focus-ring),
+		inset 0 2px 0 var(--novel-focus-ring),
+		inset 0 -2px 0 var(--novel-focus-ring);
+}
+.novel-chapter-table-container:focus-within tr.is-selected td:last-child {
+	box-shadow:
+		inset -2px 0 0 var(--novel-focus-ring),
+		inset 0 2px 0 var(--novel-focus-ring),
+		inset 0 -2px 0 var(--novel-focus-ring);
+}
+.novel-chapter-table-container:focus-within tr.is-selected td:first-child:last-child {
+	box-shadow: inset 0 0 0 2px var(--novel-focus-ring);
+}

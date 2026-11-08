@@ -6,6 +6,8 @@ import {
 	Keymap,
 	Menu,
 	MenuItem,
+	MenuPositionDef,
+	Modifier,
 	normalizePath,
 	Notice,
 	Platform,
@@ -41,6 +43,9 @@ import { renderEmptyState } from "./emptyState";
 const FILTER_CHECKED = "__novel-manager-checked__";
 const FILTER_UNCHECKED = "__novel-manager-unchecked__";
 
+// The property cell's control (dropdown or checkbox), reachable from the keyboard
+const PROPERTY_CONTROL = "td select, td input[type=checkbox]";
+
 export class ChaptersTab {
 	// State for filtering and searching
 	private searchTerm = "";
@@ -63,11 +68,28 @@ export class ChaptersTab {
 	private draggedFile: TFile | null = null;
 	private dropTargetKey: string | null = null;
 
+	// Keyboard navigation: the selected item, "row:<path>" or "group:<key>"
+	private selectedId: string | null = null;
+
 	constructor(
 		private context: TabContext,
 		private controlsContainer: HTMLDivElement,
 		private tableContainer: HTMLDivElement,
-	) {}
+	) {
+		this.registerNavigationKeys();
+
+		// Focusing an item (click or keys) selects it; Tab onto the table picks one
+		tableContainer.addEventListener("focusin", (ev) => {
+			if (!this.plugin.settings.keyboardNavigation) return;
+			const target = ev.target;
+			if (target === tableContainer) {
+				this.focusTable();
+			} else if (target instanceof HTMLElement) {
+				const item = target.closest<HTMLElement>("[data-nav-id]");
+				if (item) this.selectItem(item, false);
+			}
+		});
+	}
 
 	private get app(): App {
 		return this.context.app;
@@ -256,9 +278,22 @@ export class ChaptersTab {
 			.setDisabled(this.currentGroupKeys.length === 0); // Nothing to toggle
 	}
 
-	// Renders the chapter table based on the selected novel project
+	// Renders the chapter table, keeping the keyboard selection (and focus) across the redraw
 	async renderChapterTable(): Promise<void> {
+		const hadFocus = this.tableContainer.contains(activeDocument.activeElement);
+		const selected = this.getSelectedItem();
+		const selectedIndex = selected ? this.getNavItems().indexOf(selected) : -1;
+
+		await this.renderTableContent();
+		this.restoreSelection(hadFocus, selectedIndex);
+	}
+
+	// Renders the chapter table based on the selected novel project
+	private async renderTableContent(): Promise<void> {
 		this.tableContainer.empty(); // Clear existing table content
+		// Focusable for the "Focus chapter list" command; a Tab stop with keyboard navigation
+		const keyboardNav = this.plugin.settings.keyboardNavigation;
+		this.tableContainer.tabIndex = keyboardNav ? 0 : -1;
 		this.currentGroupKeys = []; // Early returns below leave no groups
 		this.updateToggleGroupsButton();
 		this.rowsByPath.clear();
@@ -464,12 +499,14 @@ export class ChaptersTab {
 
 		// Drag to move (HTML drag-and-drop doesn't work in the mobile app)
 		const canDrag = this.plugin.settings.dragToMove && !Platform.isMobile;
+		let newFolderZone: HTMLElement | null = null; // Shown below the table while dragging
 		if (canDrag) {
 			// Leaving the table clears the highlight (relatedTarget is where the pointer went)
 			table.addEventListener("dragleave", (ev) => {
 				const to = ev.relatedTarget;
 				if (!(to instanceof Node) || !table.contains(to)) this.setDropTarget(null);
 			});
+			newFolderZone = this.renderNewFolderDropZone(currentNovelProject);
 		}
 
 		// Render Table Body with grouped chapters
@@ -486,6 +523,10 @@ export class ChaptersTab {
 			});
 			groupHeaderRow.toggleClass("collapsed", startCollapsed);
 			this.groupHeaderByKey.set(group.key, groupHeaderRow);
+			if (keyboardNav) {
+				groupHeaderRow.tabIndex = -1; // Focusable, but not a Tab stop
+				groupHeaderRow.dataset.navId = `group:${group.key}`;
+			}
 
 			// Create a header cell that spans all columns
 			const groupHeaderCell = groupHeaderRow.createEl("td");
@@ -502,25 +543,13 @@ export class ChaptersTab {
 				text: ` ${group.name} (${group.files.length})`,
 			});
 
-			// Add an event listener to toggle the visibility of the group rows
-			groupHeaderRow.addEventListener("click", () => {
-				const isCollapsed = !this.collapsedGroups.has(group.key);
-				if (isCollapsed) {
-					this.collapsedGroups.add(group.key);
-				} else {
-					this.collapsedGroups.delete(group.key);
-				}
-				groupHeaderRow.toggleClass("collapsed", isCollapsed);
-				setIcon(iconEl, isCollapsed ? "chevron-right" : "chevron-down");
-				groupRows.forEach((row) => row.toggle(!isCollapsed));
-				this.updateToggleGroupsButton();
-				this.highlightActiveChapter(false); // Moves between the row and its group header
-			});
+			// Clicking the header collapses or expands the group
+			groupHeaderRow.addEventListener("click", () => this.toggleGroup(group.key));
 
 			// Right-click menu for the group
 			groupHeaderRow.addEventListener("contextmenu", (ev) => {
 				ev.preventDefault();
-				this.showGroupMenu(ev, group.key, currentNovelProject);
+				this.showGroupMenu(this.menuPosition(ev, groupHeaderRow), group.key, currentNovelProject);
 			});
 			if (canDrag) this.attachDropTarget(groupHeaderRow, group.key, currentNovelProject);
 
@@ -528,6 +557,10 @@ export class ChaptersTab {
 			for (const file of group.files) {
 				const row = tbody.createEl("tr", { cls: "chapter-data-row" });
 				groupRows.push(row);
+				if (keyboardNav) {
+					row.tabIndex = -1;
+					row.dataset.navId = `row:${file.path}`;
+				}
 				this.rowsByPath.set(file.path, row);
 				this.groupKeyByPath.set(file.path, group.key);
 				if (startCollapsed) row.hide();
@@ -545,16 +578,30 @@ export class ChaptersTab {
 					row.addEventListener("dragstart", (ev) => {
 						this.draggedFile = file;
 						if (ev.dataTransfer) {
-							ev.dataTransfer.effectAllowed = "move";
+							// "copy" too, so editors accept the drop and insert the link
+							ev.dataTransfer.effectAllowed = "copyMove";
 							ev.dataTransfer.setData("application/x-novel-chapter", file.path);
+							// Dropped into a note: a link, following the user's link settings
+							ev.dataTransfer.setData(
+								"text/plain",
+								this.app.fileManager.generateMarkdownLink(file, ""),
+							);
 						}
 						row.addClass("is-dragging");
+						// Next frame: changing the layout during dragstart can cancel the drag
+						window.requestAnimationFrame(() => {
+							if (this.draggedFile === file) {
+								this.tableContainer.addClass("is-dragging-chapter");
+							}
+						});
 					});
 					// Fires after a drop, Escape, or dropping outside
 					row.addEventListener("dragend", () => {
 						row.removeClass("is-dragging");
 						this.draggedFile = null;
 						this.setDropTarget(null);
+						this.tableContainer.removeClass("is-dragging-chapter");
+						newFolderZone?.removeClass("is-drop-target");
 					});
 					this.attachDropTarget(row, group.key, currentNovelProject);
 				}
@@ -581,134 +628,11 @@ export class ChaptersTab {
 						.catch(console.error);
 				});
 
-				// Context menu on the whole row: open, rename, delete, move
-				row.addEventListener(
-					"contextmenu",
-					(ev: MouseEvent) => {
-						ev.preventDefault();
-						const menu = new Menu();
-
-						// Open Actions
-						menu.addItem((item: MenuItem) =>
-							item
-								.setTitle("Open in new tab")
-								.setIcon("file-plus")
-								.onClick(() => {
-									this.app.workspace
-										.openLinkText(file.path, "", "tab")
-										.catch(console.error);
-								}),
-						);
-						menu.addItem((item: MenuItem) =>
-							item
-								.setTitle("Open to the right")
-								.setIcon("separator-vertical")
-								.onClick(() => {
-									this.app.workspace
-										.openLinkText(file.path, "", "split")
-										.catch(console.error);
-								}),
-						);
-
-						menu.addSeparator();
-
-						// Rename Action
-						menu.addItem((item: MenuItem) =>
-							item
-								.setTitle("Rename")
-								.setIcon("pencil")
-								.onClick(() => {
-									promptAndRenameChapter(this.app, file)
-										.catch(console.error); // Prompt the user to rename the chapter
-								}),
-						);
-
-						// Delete Action
-						menu.addItem((item: MenuItem) =>
-							item
-								.setTitle("Delete")
-								.setIcon("trash")
-								.onClick(() => {
-									promptAndDeleteChapter(this.app, file)
-										.catch(console.error); // Prompt the user to confirm deletion of the chapter
-								}),
-						);
-
-						menu.addSeparator();
-
-						// Move Action - Opens a new menu onClick
-						menu.addItem((item: MenuItem) => {
-							item.setTitle("Move to...")
-								.setIcon("folder-move")
-								.onClick(() => {
-									// Create a new menu that acts as the submenu
-									const folderMenu = new Menu();
-
-									// Same folders as the new-chapter dialog, project folder ("Other") first
-									const [rootOption, ...subfolderOptions] =
-										getChapterFolderOptions(
-											this.app,
-											this.plugin.settings,
-											currentNovelProject,
-										);
-									// Parent folder, to disable moving to where the file already is
-									const currentFileParentPath =
-										file.parent?.path || "";
-
-									const addFolderItem = (
-										option: { name: string; path: string },
-										icon: string,
-									) => {
-										folderMenu.addItem((subitem: MenuItem) => {
-											subitem
-												.setTitle(option.name)
-												.setIcon(icon)
-												.onClick(() => {
-													moveChapter(this.app, file, option.path).catch(
-														console.error,
-													);
-												});
-											// Disable the folder the chapter is already in
-											if (currentFileParentPath === option.path) {
-												subitem.setDisabled(true);
-											}
-										});
-									};
-
-									addFolderItem(rootOption, "folder-up");
-									// Separator between "Other" and the subfolders
-									if (subfolderOptions.length > 0) {
-										folderMenu.addSeparator();
-									}
-									subfolderOptions.forEach((option) =>
-										addFolderItem(option, "folder"),
-									);
-
-									// Ask for a name, create the subfolder and move there
-									folderMenu.addSeparator();
-									folderMenu.addItem((subitem: MenuItem) => {
-										subitem
-											.setTitle("New folder...")
-											.setIcon("folder-plus")
-											.onClick(() => {
-												promptAndMoveChapterToNewFolder(
-													this.app,
-													this.plugin.settings,
-													currentNovelProject,
-													file,
-												);
-											});
-									});
-
-									// Show the new menu at the location of the original click
-									folderMenu.showAtMouseEvent(ev);
-								});
-						});
-
-						// Show the context menu at the mouse event location
-						menu.showAtMouseEvent(ev);
-					},
-				);
+				// Context menu on the whole row (also from the menu key or Shift+F10)
+				row.addEventListener("contextmenu", (ev: MouseEvent) => {
+					ev.preventDefault();
+					this.showChapterMenu(file, currentNovelProject, this.menuPosition(ev, row));
+				});
 
 				// Property cell: a checkbox (checkbox type) or a dropdown of the options
 				if (showPropertyColumn) {
@@ -769,6 +693,34 @@ export class ChaptersTab {
 		});
 	}
 
+	// Drop zone below the table: asks for a folder name, creates it and moves the chapter there
+	private renderNewFolderDropZone(project: NovelProject): HTMLElement {
+		const zone = this.tableContainer.createDiv({ cls: "novel-new-folder-dropzone" });
+		setIcon(zone.createSpan({ cls: "novel-new-folder-dropzone-icon" }), "folder-plus");
+		zone.createSpan({ text: "Drop here to move to a new folder" });
+
+		zone.addEventListener("dragover", (ev) => {
+			if (!this.draggedFile) return;
+			ev.preventDefault(); // Accept the drop
+			if (ev.dataTransfer) ev.dataTransfer.dropEffect = "move";
+			this.setDropTarget(null); // No group stays lit
+			zone.addClass("is-drop-target");
+		});
+		zone.addEventListener("dragleave", (ev) => {
+			// Ignore moves between the zone's own children
+			const to = ev.relatedTarget;
+			if (!(to instanceof Node) || !zone.contains(to)) zone.removeClass("is-drop-target");
+		});
+		zone.addEventListener("drop", (ev) => {
+			const file = this.draggedFile;
+			if (!file) return;
+			ev.preventDefault();
+			zone.removeClass("is-drop-target");
+			promptAndMoveChapterToNewFolder(this.app, this.plugin.settings, project, file);
+		});
+		return zone;
+	}
+
 	// Highlights a group (header and rows) as the drop target; null clears it
 	private setDropTarget(key: string | null): void {
 		if (key === this.dropTargetKey) return; // dragover fires constantly
@@ -785,8 +737,394 @@ export class ChaptersTab {
 		}
 	}
 
+	// ====== Keyboard navigation ======
+
+	// Keys go through the view's scope, since global hotkeys (e.g. F2 = rename file) win over keydown listeners
+	private registerNavigationKeys(): void {
+		// The handler gets the selected item, and the property control when focus is in it
+		const register = (
+			modifiers: Modifier[],
+			key: string,
+			handler: (item: HTMLElement | null, control: HTMLElement | null) => void,
+		) => {
+			this.context.scope.register(modifiers, key, (evt) => {
+				const target = this.getKeyTarget(evt);
+				if (!target) return true; // Not ours
+				handler(target.item, target.control);
+				return false; // Handled: no default action, no other hotkeys
+			});
+		};
+		// Parses an item into its chapter file or group key
+		const parse = (item: HTMLElement | null) => {
+			const id = item?.dataset.navId ?? "";
+			if (id.startsWith("row:")) {
+				const file = this.app.vault.getAbstractFileByPath(id.slice(4));
+				return { file: file instanceof TFile ? file : null, groupKey: null };
+			}
+			if (id.startsWith("group:")) return { file: null, groupKey: id.slice(6) };
+			return { file: null, groupKey: null };
+		};
+
+		// Arrows always move between rows, even from the dropdown (which would change the value)
+		register([], "ArrowDown", (item) => this.moveSelection(item, 1));
+		register([], "ArrowUp", (item) => this.moveSelection(item, -1));
+		register([], "Home", () => this.moveSelection(null, "first"));
+		register([], "End", () => this.moveSelection(null, "last"));
+
+		register([], "Enter", (item, control) => {
+			if (control) {
+				this.activatePropertyControl(control); // Open the dropdown, or toggle the checkbox
+				return;
+			}
+			const { file, groupKey } = parse(item);
+			if (file) this.app.workspace.openLinkText(file.path, "", false).catch(console.error);
+			else if (groupKey !== null) this.toggleGroup(groupKey);
+		});
+		register(["Mod"], "Enter", (item) => {
+			const { file } = parse(item);
+			if (file) this.app.workspace.openLinkText(file.path, "", "tab").catch(console.error);
+		});
+
+		register([], "ArrowRight", (item, control) => {
+			if (control) return; // Already in the last cell; also keeps the dropdown's value
+			const { file, groupKey } = parse(item);
+			if (file) {
+				// Into the property cell
+				item?.querySelector<HTMLElement>(PROPERTY_CONTROL)?.focus();
+				return;
+			}
+			if (groupKey === null) return;
+			if (this.collapsedGroups.has(groupKey)) {
+				this.toggleGroup(groupKey);
+			} else {
+				const firstRow = this.rowsByGroupKey.get(groupKey)?.[0];
+				if (firstRow) this.selectItem(firstRow, true);
+			}
+		});
+		register([], "ArrowLeft", (item, control) => {
+			if (control) {
+				if (item) this.selectItem(item, true); // Back to the row
+				return;
+			}
+			const { file, groupKey } = parse(item);
+			if (file) {
+				const header = this.groupHeaderByKey.get(this.groupKeyByPath.get(file.path) ?? "");
+				if (header) this.selectItem(header, true);
+			} else if (groupKey !== null && !this.collapsedGroups.has(groupKey)) {
+				this.toggleGroup(groupKey);
+			}
+		});
+
+		register([], "F2", (item) => {
+			const { file, groupKey } = parse(item);
+			if (file) {
+				promptAndRenameChapter(this.app, file).catch(console.error);
+			} else if (groupKey !== null) {
+				const project = this.plugin.settings.novelProjects.find(
+					(p) => p.id === this.selectedNovelProjectId,
+				);
+				const folder = project ? this.getGroupFolder(groupKey, project) : null;
+				if (folder) this.renameGroupFolder(folder);
+			}
+		});
+		register([], "Delete", (item) => {
+			const { file } = parse(item);
+			if (file) promptAndDeleteChapter(this.app, file).catch(console.error);
+		});
+		register([], "Escape", (item, control) => {
+			if (control && item) this.selectItem(item, true); // Leave the property cell
+		});
+
+		// Space acts on the row's property (no global hotkey uses it, so a listener is enough)
+		this.tableContainer.addEventListener("keydown", (evt) => {
+			if (evt.key !== " " || evt.ctrlKey || evt.metaKey || evt.altKey) return;
+			const target = this.getKeyTarget(evt);
+			if (!target?.item?.dataset.navId?.startsWith("row:")) return;
+			const control =
+				target.control ?? target.item.querySelector<HTMLElement>(PROPERTY_CONTROL);
+			if (!control) return;
+			evt.preventDefault(); // No scrolling, no native toggle on top of ours
+			this.activatePropertyControl(control);
+		});
+	}
+
+	// What a key acts on: the selected item, plus the property control if it has focus
+	private getKeyTarget(
+		evt: KeyboardEvent,
+	): { item: HTMLElement | null; control: HTMLElement | null } | null {
+		if (!this.plugin.settings.keyboardNavigation || evt.isComposing) return null;
+		const active = activeDocument.activeElement;
+		if (!(active instanceof HTMLElement) || !this.tableContainer.contains(active)) return null;
+		const control = active.matches(PROPERTY_CONTROL) ? active : null;
+		if (!control && active.matches("select, input, textarea")) return null; // Some other field
+		return { item: active.closest<HTMLElement>("[data-nav-id]"), control };
+	}
+
+	// Opens the property dropdown's list, or toggles the checkbox
+	private activatePropertyControl(control: HTMLElement): void {
+		control.focus();
+		if (control.instanceOf(HTMLSelectElement)) {
+			try {
+				control.showPicker(); // Pick with the arrows, confirm with Enter
+			} catch {
+				// Not supported: the focused dropdown still opens with Alt+Down
+			}
+		} else if (control.instanceOf(HTMLInputElement)) {
+			control.click(); // Fires change, like a mouse click
+		}
+	}
+
+	// Visible group headers and rows, in order (rows in collapsed groups are hidden)
+	private getNavItems(): HTMLElement[] {
+		return Array.from(
+			this.tableContainer.querySelectorAll<HTMLElement>("[data-nav-id]"),
+		).filter((el) => el.isShown());
+	}
+
+	private getSelectedItem(): HTMLElement | null {
+		if (!this.selectedId) return null;
+		return (
+			this.getNavItems().find((el) => el.dataset.navId === this.selectedId) ?? null
+		);
+	}
+
+	// Marks an item as selected; optionally focuses it and scrolls it into view
+	private selectItem(item: HTMLElement, focus: boolean): void {
+		this.tableContainer
+			.querySelectorAll(".is-selected")
+			.forEach((el) => el.removeClass("is-selected"));
+		item.addClass("is-selected");
+		this.selectedId = item.dataset.navId ?? null;
+		if (focus) {
+			item.focus({ preventScroll: true });
+			item.scrollIntoView({ block: "nearest" }); // Rows keep clear of the sticky headers
+		}
+	}
+
+	// Moves the selection by a step, or to the first or last item
+	private moveSelection(from: HTMLElement | null, step: number | "first" | "last"): void {
+		const items = this.getNavItems();
+		if (items.length === 0) return;
+		let target: HTMLElement | undefined;
+		if (step === "first") target = items[0];
+		else if (step === "last") target = items[items.length - 1];
+		else if (!from) target = items[0];
+		else {
+			const index = items.indexOf(from) + step;
+			target = items[Math.max(0, Math.min(items.length - 1, index))];
+		}
+		if (target) this.selectItem(target, true);
+	}
+
+	// After a redraw: the same item, or the one now at its position (after a delete or move)
+	private restoreSelection(hadFocus: boolean, previousIndex: number): void {
+		if (!this.plugin.settings.keyboardNavigation) {
+			if (hadFocus) this.tableContainer.focus({ preventScroll: true });
+			return;
+		}
+		const items = this.getNavItems();
+		const item =
+			this.getSelectedItem() ??
+			(previousIndex >= 0 && items.length > 0
+				? items[Math.min(previousIndex, items.length - 1)]
+				: undefined);
+		if (item) this.selectItem(item, hadFocus);
+		else if (hadFocus) this.tableContainer.focus({ preventScroll: true });
+	}
+
+	// Focuses the table: the selected item, else the open chapter, else the first item
+	focusTable(): void {
+		if (!this.plugin.settings.keyboardNavigation) {
+			this.tableContainer.focus();
+			return;
+		}
+		const activePath = this.app.workspace.getActiveFile()?.path;
+		const activeRow = activePath ? this.rowsByPath.get(activePath) : undefined;
+		const activeKey = activePath ? this.groupKeyByPath.get(activePath) : undefined;
+		// A collapsed group hides the open chapter's row, so its header stands in
+		const activeItem = activeRow?.isShown()
+			? activeRow
+			: activeKey !== undefined
+				? this.groupHeaderByKey.get(activeKey)
+				: undefined;
+		const item = this.getSelectedItem() ?? activeItem ?? this.getNavItems()[0];
+		if (item) this.selectItem(item, true);
+		else this.tableContainer.focus();
+	}
+
+	// Collapses or expands a group in place (no redraw)
+	private toggleGroup(key: string): void {
+		const header = this.groupHeaderByKey.get(key);
+		if (!header) return;
+		const isCollapsed = !this.collapsedGroups.has(key);
+		if (isCollapsed) {
+			this.collapsedGroups.add(key);
+		} else {
+			this.collapsedGroups.delete(key);
+		}
+		header.toggleClass("collapsed", isCollapsed);
+		const iconEl = header.querySelector<HTMLElement>(".group-toggle-icon");
+		if (iconEl) setIcon(iconEl, isCollapsed ? "chevron-right" : "chevron-down");
+		const rows = this.rowsByGroupKey.get(key) ?? [];
+		rows.forEach((row) => row.toggle(!isCollapsed));
+
+		// A selected row that just got hidden hands the selection to its header
+		const selected = this.getSelectedItem();
+		if (isCollapsed && selected && (rows as HTMLElement[]).includes(selected)) {
+			this.selectItem(header, this.tableContainer.contains(activeDocument.activeElement));
+		}
+		this.updateToggleGroupsButton();
+		this.highlightActiveChapter(false); // Moves between the row and its group header
+	}
+
+	// A group's folder, or null for "Other" (the project folder) or a missing folder
+	private getGroupFolder(groupKey: string, project: NovelProject): TFolder | null {
+		if (groupKey === OTHER_GROUP_KEY) return null;
+		const folder = this.app.vault.getAbstractFileByPath(getGroupFolderPath(project, groupKey));
+		return folder instanceof TFolder ? folder : null;
+	}
+
+	// Asks for a new folder name; the group keeps its collapsed state and selection
+	private renameGroupFolder(folder: TFolder): void {
+		promptAndRenameChapterFolder(this.app, folder, (oldName, newName) => {
+			if (this.collapsedGroups.delete(oldName)) this.collapsedGroups.add(newName);
+			if (this.selectedId === `group:${oldName}`) this.selectedId = `group:${newName}`;
+		});
+	}
+
+	// Right-click menu on a chapter row: open, rename, delete, move
+	private showChapterMenu(file: TFile, project: NovelProject, pos: MenuPositionDef): void {
+		const menu = new Menu();
+
+		// Open Actions
+		menu.addItem((item: MenuItem) =>
+			item
+				.setTitle("Open in new tab")
+				.setIcon("file-plus")
+				.onClick(() => {
+					this.app.workspace
+						.openLinkText(file.path, "", "tab")
+						.catch(console.error);
+				}),
+		);
+		menu.addItem((item: MenuItem) =>
+			item
+				.setTitle("Open to the right")
+				.setIcon("separator-vertical")
+				.onClick(() => {
+					this.app.workspace
+						.openLinkText(file.path, "", "split")
+						.catch(console.error);
+				}),
+		);
+
+		menu.addSeparator();
+
+		// Rename Action
+		menu.addItem((item: MenuItem) =>
+			item
+				.setTitle("Rename")
+				.setIcon("pencil")
+				.onClick(() => {
+					promptAndRenameChapter(this.app, file)
+						.catch(console.error); // Prompt the user to rename the chapter
+				}),
+		);
+
+		// Delete Action
+		menu.addItem((item: MenuItem) =>
+			item
+				.setTitle("Delete")
+				.setIcon("trash")
+				.onClick(() => {
+					promptAndDeleteChapter(this.app, file)
+						.catch(console.error); // Prompt the user to confirm deletion of the chapter
+				}),
+		);
+
+		menu.addSeparator();
+
+		// Move Action - Opens a new menu onClick
+		menu.addItem((item: MenuItem) => {
+			item.setTitle("Move to...")
+				.setIcon("folder-move")
+				.onClick(() => {
+					// Create a new menu that acts as the submenu
+					const folderMenu = new Menu();
+
+					// Same folders as the new-chapter dialog, project folder ("Other") first
+					const [rootOption, ...subfolderOptions] =
+						getChapterFolderOptions(
+							this.app,
+							this.plugin.settings,
+							project,
+						);
+					// Parent folder, to disable moving to where the file already is
+					const currentFileParentPath =
+						file.parent?.path || "";
+
+					const addFolderItem = (
+						option: { name: string; path: string },
+						icon: string,
+					) => {
+						folderMenu.addItem((subitem: MenuItem) => {
+							subitem
+								.setTitle(option.name)
+								.setIcon(icon)
+								.onClick(() => {
+									moveChapter(this.app, file, option.path).catch(
+										console.error,
+									);
+								});
+							// Disable the folder the chapter is already in
+							if (currentFileParentPath === option.path) {
+								subitem.setDisabled(true);
+							}
+						});
+					};
+
+					addFolderItem(rootOption, "folder-up");
+					// Separator between "Other" and the subfolders
+					if (subfolderOptions.length > 0) {
+						folderMenu.addSeparator();
+					}
+					subfolderOptions.forEach((option) =>
+						addFolderItem(option, "folder"),
+					);
+
+					// Ask for a name, create the subfolder and move there
+					folderMenu.addSeparator();
+					folderMenu.addItem((subitem: MenuItem) => {
+						subitem
+							.setTitle("New folder...")
+							.setIcon("folder-plus")
+							.onClick(() => {
+								promptAndMoveChapterToNewFolder(
+									this.app,
+									this.plugin.settings,
+									project,
+									file,
+								);
+							});
+					});
+
+					// Show the submenu where the menu was opened
+					folderMenu.showAtPosition(pos);
+				});
+		});
+
+		menu.showAtPosition(pos);
+	}
+
+	// Where to open a menu: at the pointer, or below the item when opened from the keyboard
+	private menuPosition(ev: MouseEvent, el: HTMLElement): MenuPositionDef {
+		if (ev.button === 2) return { x: ev.clientX, y: ev.clientY };
+		const rect = el.getBoundingClientRect();
+		return { x: rect.left + 16, y: rect.bottom };
+	}
+
 	// Right-click menu on a group header: new chapter here, rename folder, collapse others
-	private showGroupMenu(ev: MouseEvent, groupKey: string, project: NovelProject): void {
+	private showGroupMenu(pos: MenuPositionDef, groupKey: string, project: NovelProject): void {
 		const folderPath = getGroupFolderPath(project, groupKey);
 		const menu = new Menu();
 
@@ -807,17 +1145,12 @@ export class ChaptersTab {
 		menu.addItem((item) => {
 			item.setTitle("Rename folder").setIcon("pencil");
 			// The "Other" group is the project folder itself (renamed in settings)
-			const folder = this.app.vault.getAbstractFileByPath(folderPath);
-			if (groupKey === OTHER_GROUP_KEY || !(folder instanceof TFolder)) {
+			const folder = this.getGroupFolder(groupKey, project);
+			if (!folder) {
 				item.setDisabled(true);
 				return;
 			}
-			item.onClick(() => {
-				promptAndRenameChapterFolder(this.app, folder, (oldName, newName) => {
-					// Keep a collapsed group collapsed under its new name
-					if (this.collapsedGroups.delete(oldName)) this.collapsedGroups.add(newName);
-				});
-			});
+			item.onClick(() => this.renameGroupFolder(folder));
 		});
 
 		menu.addSeparator();
@@ -834,7 +1167,7 @@ export class ChaptersTab {
 				}),
 		);
 
-		menu.showAtMouseEvent(ev);
+		menu.showAtPosition(pos);
 	}
 
 	// Marks the open chapter's row (or its collapsed group's header); scroll only when it changed

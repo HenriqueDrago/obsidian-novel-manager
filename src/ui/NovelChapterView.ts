@@ -176,6 +176,12 @@ export class NovelChapterView extends ItemView {
 		this.fragmentsTab.focusCreationBox();
 	}
 
+	// Shows the chapters tab and focuses the table (used by a command)
+	focusChapterList(): void {
+		this.showTab("chapters");
+		this.chaptersTab.focusTable();
+	}
+
 	// Switches to a chapter's project and tab, then scrolls to and flashes its row
 	async revealChapter(file: TFile): Promise<void> {
 		const project = findProjectForFile(this.plugin.settings, file);

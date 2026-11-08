@@ -27,6 +27,7 @@ export interface NovelChapterPluginSettings {
 	followActiveChapter: boolean; // Switch the view to the project of the file you open
 	dragToMove: boolean; // Drag chapter rows onto another group to move them (desktop)
 	revealInFileMenu: boolean; // "Reveal in Novel Manager" in Obsidian's file menus
+	keyboardNavigation: boolean; // Arrow keys, Enter, F2, Delete in the chapter table
 }
 
 // Define the default settings
@@ -51,6 +52,7 @@ export const DEFAULT_SETTINGS: NovelChapterPluginSettings = {
 	followActiveChapter: false,
 	dragToMove: true,
 	revealInFileMenu: true,
+	keyboardNavigation: false,
 };
 
 // Settings plus internal state that isn't shown in the settings tab
@@ -95,6 +97,9 @@ export function normalizeSettings(
 	}
 	if (typeof settings.revealInFileMenu !== "boolean") {
 		settings.revealInFileMenu = true;
+	}
+	if (typeof settings.keyboardNavigation !== "boolean") {
+		settings.keyboardNavigation = false;
 	}
 	if (!FRAGMENT_SORTS.includes(settings.fragmentSort)) {
 		settings.fragmentSort = "newest";

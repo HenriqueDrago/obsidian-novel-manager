@@ -44,7 +44,7 @@ export default [
         "warn",
         {
           brands: ["Obsidian", "Novel Manager"],
-          acronyms: ["ID", "URL", "UI"],
+          acronyms: ["ID", "URL", "UI", "F2"],
           enforceCamelCaseLower: true,
         },
       ],

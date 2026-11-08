@@ -102,6 +102,15 @@ export default class NovelChapterPlugin extends Plugin {
 			},
 		});
 
+		// Command to jump into the chapter table (arrow keys work there with keyboard navigation)
+		this.addCommand({
+			id: "focus-chapter-list",
+			name: "Focus chapter list",
+			callback: () => {
+				void this.activateView().then((view) => view?.focusChapterList());
+			},
+		});
+
 		// Command to scroll the view to the open chapter
 		this.addCommand({
 			id: "reveal-current-chapter",

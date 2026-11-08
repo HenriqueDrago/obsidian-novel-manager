@@ -134,6 +134,21 @@ export class NovelChapterPluginSettingsTab extends PluginSettingTab {
 					})
 			);
 
+		// Create setting for keyboard navigation in the chapter table
+		new Setting(containerEl)
+			.setName("Keyboard navigation")
+			.setDesc(
+				"Move through the chapter list with the arrow keys. Enter opens a chapter, space changes its property, F2 renames, the delete key deletes, and left and right collapse or expand groups or step into the property cell."
+			)
+			.addToggle((toggle) =>
+				toggle
+					.setValue(this.plugin.settings.keyboardNavigation)
+					.onChange(async (value) => {
+						this.plugin.settings.keyboardNavigation = value;
+						await this.plugin.saveSettings(); // Redraws the table with or without focus support
+					})
+			);
+
 		// ====== Property column ======
 		new Setting(containerEl).setName("Property column").setHeading();
 

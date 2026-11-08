@@ -728,12 +728,17 @@ export class ChaptersTab {
 		if (scroll && changed) target.scrollIntoView({ block: "nearest" });
 	}
 
-	// Shows a chapter: expands its group, scrolls it to the center and flashes it
-	async revealChapter(file: TFile): Promise<void> {
+	// Expands the group holding a chapter, if it's collapsed
+	async expandGroupOf(file: TFile): Promise<void> {
 		const groupKey = this.groupKeyByPath.get(file.path);
 		if (groupKey !== undefined && this.collapsedGroups.delete(groupKey)) {
 			await this.renderChapterTable(); // Re-render with the group expanded
 		}
+	}
+
+	// Shows a chapter: expands its group, scrolls it to the center and flashes it
+	async revealChapter(file: TFile): Promise<void> {
+		await this.expandGroupOf(file);
 		const row = this.rowsByPath.get(file.path);
 		if (!row) return;
 		row.scrollIntoView({ block: "center" });

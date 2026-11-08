@@ -147,6 +147,7 @@ export class NovelChapterView extends ItemView {
 		if (file && this.plugin.settings.followActiveChapter) {
 			const project = findProjectForFile(this.plugin.settings, file, true);
 			if (project) await this.selectProject(project.id);
+			await this.chaptersTab.expandGroupOf(file); // Show the chapter, not just its group
 		}
 		this.chaptersTab.highlightActiveChapter(true);
 	}

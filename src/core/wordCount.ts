@@ -59,11 +59,6 @@ export function countText(markdown: string, startMarker = ""): TextCounts {
 	return { words: cjkCount + otherCount, characters: Array.from(plain).length };
 }
 
-// Words only (kept for callers that don't need characters)
-export function countWords(markdown: string, startMarker = ""): number {
-	return countText(markdown, startMarker).words;
-}
-
 // The number to show for a unit; pages come from words
 export function countInUnit(counts: TextCounts, unit: WordCountUnit, wordsPerPage: number): number {
 	if (unit === "characters") return counts.characters;

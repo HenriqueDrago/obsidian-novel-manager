@@ -10,7 +10,13 @@ import {
 	planNumbering,
 	UNNUMBERED_KEY,
 } from "./numbering";
-import { getChapterGroupKey, isCaseSensitiveFileSystem, naturalCompare, OTHER_GROUP_KEY } from "./utils";
+import {
+	findPathOccupant,
+	getChapterGroupKey,
+	isCaseSensitiveFileSystem,
+	naturalCompare,
+	OTHER_GROUP_KEY,
+} from "./utils";
 
 // Stands in for a chapter that doesn't exist yet in a plan (no real path starts with a NUL)
 const NEW_CHAPTER_PATH = "\0new-chapter";
@@ -99,20 +105,41 @@ async function renameAll(
 		.filter((m) => m.file.path !== m.newPath);
 	const movers = new Set(pending.map((m) => m.file));
 
-	// A target taken by a file outside the batch would never free up
-	for (const { newPath } of pending) {
-		const existing = app.vault.getAbstractFileByPath(newPath);
-		if (existing && !(existing instanceof TFile && movers.has(existing))) {
-			throw new Error(`"${newPath}" already exists.`);
+	// Asks the disk too, in case the drive ignores case after all. Whose is the target there:
+	// null = free, "self" = this file (a case change), "mover" = a chapter of the batch that
+	// hasn't moved yet, "other" = something outside the batch
+	const diskHolder = async (move: { file: TFile; newPath: string }) => {
+		if (!(await app.vault.adapter.exists(move.newPath))) return null;
+		const lower = move.newPath.toLowerCase();
+		if (move.file.path.toLowerCase() === lower) return "self";
+		for (const mover of movers) {
+			if (mover !== move.file && mover.path.toLowerCase() === lower) return "mover";
 		}
+		return "other";
+	};
+
+	// A target taken by a file outside the batch would never free up: check all before renaming any
+	for (const move of pending) {
+		const existing = findPathOccupant(app, move.newPath);
+		const taken = existing
+			? !(existing instanceof TFile && movers.has(existing))
+			: (await diskHolder(move)) === "other";
+		if (taken) throw new Error(`"${move.newPath}" already exists.`);
 	}
 
 	while (pending.length > 0) {
 		const blocked: typeof pending = [];
 		for (const move of pending) {
-			const existing = app.vault.getAbstractFileByPath(move.newPath);
-			// Free, or only a case change of the same file
+			// Any letter case where the drive ignores it, so nothing is overwritten
+			const existing = findPathOccupant(app, move.newPath);
+			// Free, or only a case change of the same file (in Obsidian and on disk)
 			if (!existing || existing === move.file) {
+				const holder = await diskHolder(move);
+				if (holder === "other") throw new Error(`"${move.newPath}" already exists.`);
+				if (holder === "mover") {
+					blocked.push(move); // Wait until that chapter has moved away
+					continue;
+				}
 				const oldPath = move.file.path;
 				await app.fileManager.renameFile(move.file, move.newPath);
 				onRenamed(move.file, oldPath);
@@ -137,7 +164,7 @@ function uniqueTempPath(app: App, file: TFile): string {
 	for (let i = 1; ; i++) {
 		const name = `${file.basename} (renumbering ${i}).md`;
 		const path = normalizePath(folder && folder !== "/" ? `${folder}/${name}` : name);
-		if (!app.vault.getAbstractFileByPath(path)) return path;
+		if (!findPathOccupant(app, path)) return path;
 	}
 }
 
@@ -155,9 +182,10 @@ async function exclusive<T>(task: () => Promise<T>): Promise<T | null> {
 	}
 }
 
-// Writes markers and renames files; returns what was done (also after an error, for undo)
-async function applyRows(app: App, rows: NumberingRow[]): Promise<NumberingUndo> {
+// Writes markers and renames files; on an error, puts everything back. Returns what was done.
+async function applyRows(app: App, rows: NumberingRow[]): Promise<{ undo: NumberingUndo; failed: boolean }> {
 	const undo: NumberingUndo = { paths: [], markers: [] };
+	let failure: string | null = null; // The error message, if it failed
 	const items = rows
 		.map((row) => ({ row, file: app.vault.getAbstractFileByPath(row.path) }))
 		.filter((item): item is { row: NumberingRow; file: TFile } => item.file instanceof TFile);
@@ -192,16 +220,21 @@ async function applyRows(app: App, rows: NumberingRow[]): Promise<NumberingUndo>
 		);
 	} catch (error) {
 		console.error("Error renumbering chapters:", error);
-		new Notice(
-			`Renumbering stopped after ${originalPaths.size} of ${total} renames: ${
-				error instanceof Error ? error.message : String(error)
-			}`,
-		);
+		failure = (error instanceof Error ? error.message : String(error)).replace(/([^.])$/, "$1."); // Ends a sentence
 	} finally {
 		progress?.hide();
 		undo.paths = Array.from(originalPaths, ([file, oldPath]) => ({ file, oldPath }));
 	}
-	return undo;
+	if (failure !== null) {
+		// Still inside the batch lock, so nothing else can start in between
+		const reverted = await revertBatch(app, undo);
+		new Notice(
+			reverted
+				? `Renumbering failed: ${failure} Every change was undone.`
+				: `Renumbering failed: ${failure} Some changes couldn't be undone. See console for details.`,
+		);
+	}
+	return { undo, failed: failure !== null };
 }
 
 // Applies a plan's changes, refusing plans where two chapters would get the same name
@@ -212,29 +245,40 @@ export async function applyNumberingPlan(app: App, plan: NumberingPlan): Promise
 		return null;
 	}
 	if (plan.changes.length === 0) return { paths: [], markers: [] };
-	return exclusive(() => applyRows(app, plan.changes));
+	const result = await exclusive(() => applyRows(app, plan.changes));
+	// Busy, or failed (and already undone): nothing changed
+	return result && !result.failed ? result.undo : null;
 }
 
-// Puts names and markers back as they were before a batch
+// Puts names and markers back as they were before a batch (no lock); returns whether it all worked
+async function revertBatch(app: App, undo: NumberingUndo): Promise<boolean> {
+	try {
+		await renameAll(
+			app,
+			undo.paths.map(({ file, oldPath }) => ({ file, newPath: oldPath })),
+			() => {},
+		);
+		for (const { file, existed, value } of undo.markers) {
+			await app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
+				if (existed) fm[UNNUMBERED_KEY] = value;
+				else delete fm[UNNUMBERED_KEY];
+			});
+		}
+		return true;
+	} catch (error) {
+		console.error("Error undoing renumbering:", error);
+		return false;
+	}
+}
+
+// Undo for a batch (the Undo buttons): puts names and markers back
 export async function undoNumbering(app: App, undo: NumberingUndo): Promise<void> {
 	await exclusive(async () => {
-		try {
-			await renameAll(
-				app,
-				undo.paths.map(({ file, oldPath }) => ({ file, newPath: oldPath })),
-				() => {},
-			);
-			for (const { file, existed, value } of undo.markers) {
-				await app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
-					if (existed) fm[UNNUMBERED_KEY] = value;
-					else delete fm[UNNUMBERED_KEY];
-				});
-			}
-			new Notice("Chapter names restored.");
-		} catch (error) {
-			console.error("Error undoing renumbering:", error);
-			new Notice("Couldn't restore every chapter name. See console for details.");
-		}
+		new Notice(
+			(await revertBatch(app, undo))
+				? "Chapter names restored."
+				: "Couldn't restore every chapter name. See console for details.",
+		);
 	});
 }
 

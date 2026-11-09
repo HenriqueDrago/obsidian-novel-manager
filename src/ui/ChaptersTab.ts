@@ -32,7 +32,6 @@ import {
 	moveChapterBy,
 	moveChapterToFolder,
 	planCurrentNumbering,
-	setChapterExcluded,
 } from "../core/renumber";
 import { NumberingModal } from "./NumberingModal";
 import {
@@ -41,6 +40,7 @@ import {
 	promptAndMoveChapterToNewFolder,
 	promptAndRenameChapter,
 	promptAndRenameChapterFolder,
+	promptAndSetChapterExcluded,
 } from "./chapterPrompts";
 import {
 	buildOptions,
@@ -1373,9 +1373,7 @@ export class ChaptersTab {
 					.setTitle(excluded ? "Number this chapter" : "Leave out of numbering")
 					.setIcon(excluded ? "list-ordered" : "list")
 					.onClick(() => {
-						setChapterExcluded(this.app, this.plugin.settings, project, file, !excluded).catch(
-							console.error,
-						);
+						promptAndSetChapterExcluded(this.app, this.plugin.settings, project, file, !excluded);
 					}),
 			);
 		}

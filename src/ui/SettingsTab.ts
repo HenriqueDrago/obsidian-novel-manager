@@ -811,6 +811,11 @@ export class NovelChapterPluginSettingsTab extends PluginSettingTab {
 								() => {
 									void (async () => {
 										projects.splice(index, 1);
+										// The selected project moves to the first one left (commands use it)
+										const settings = this.plugin.settings;
+										if (settings.lastSelectedNovelId === project.id) {
+											settings.lastSelectedNovelId = projects[0]?.id ?? null;
+										}
 										await this.plugin.saveSettings();
 										this.renderNovelProjects(containerEl); // Re-render the list
 									})();

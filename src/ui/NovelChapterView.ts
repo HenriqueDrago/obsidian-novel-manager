@@ -30,6 +30,12 @@ export interface TabContext {
 
 type TabName = "chapters" | "fragments";
 
+// Which tabs a refresh redraws (file changes only touch one of them most of the time)
+export interface RefreshScope {
+	chapters: boolean;
+	fragments: boolean;
+}
+
 // The sidebar view: project selector, tab bar, and deciding what to redraw
 export class NovelChapterView extends ItemView {
 	plugin: NovelChapterPlugin; // Reference to the plugin instance
@@ -44,6 +50,7 @@ export class NovelChapterView extends ItemView {
 	tableContainer!: HTMLDivElement;
 
 	activeTab: TabName = "chapters"; // Track current tab
+	private fragmentsStale = false; // Fragments changed while their tab was hidden: rebuilt when shown
 	selectedNovelProjectId: string | null = null; // ID of the currently selected novel project
 	private displayedProjectId: string | null | undefined = undefined; // Project the tab title was last set for
 
@@ -197,8 +204,12 @@ export class NovelChapterView extends ItemView {
 		await this.chaptersTab.revealChapter(file);
 	}
 
-	// Redraws the view; settingsHaveChanged also rebuilds the selector, tabs and controls
-	async updateView(settingsHaveChanged = false) {
+	// Redraws the view; settingsHaveChanged also rebuilds the selector, tabs and controls.
+	// A scope limits a plain refresh to the tabs whose files changed.
+	async updateView(
+		settingsHaveChanged = false,
+		scope: RefreshScope = { chapters: true, fragments: true },
+	) {
 		// Pick a project if none (or a removed one) is selected
 		if (
 			!this.selectedNovelProjectId ||
@@ -225,6 +236,8 @@ export class NovelChapterView extends ItemView {
 				// If no projects are available, reset the selected project ID to null
 				this.selectedNovelProjectId = null;
 			}
+			// Commands (e.g. new chapter) target the project the view shows
+			this.plugin.settings.lastSelectedNovelId = this.selectedNovelProjectId;
 		}
 
 		// If settings have changed, re-render the selector, tabs and controls
@@ -246,14 +259,23 @@ export class NovelChapterView extends ItemView {
 			this.displayedProjectId = this.selectedNovelProjectId;
 			this.updateLeafDisplayText();
 		}
-		this.updateTabCounts();
-		await this.chaptersTab.renderChapterTable(); // Render the chapter table based on the selected project
+		this.updateTabCounts(); // Cheap, and both counts can change
+		if (settingsHaveChanged || scope.chapters) {
+			await this.chaptersTab.renderChapterTable(); // Render the chapter table based on the selected project
+		}
 
 		// Rebuild the fragments tab only on settings changes, so the draft and focus survive
 		if (settingsHaveChanged || !this.fragmentsTab.hasFeed) {
 			await this.fragmentsTab.render();
-		} else {
-			await this.fragmentsTab.refreshFeed();
+			this.fragmentsStale = false;
+		} else if (scope.fragments) {
+			// A hidden feed waits until its tab is shown (it reads every fragment)
+			if (this.activeTab === "fragments") {
+				await this.fragmentsTab.refreshFeed();
+				this.fragmentsStale = false;
+			} else {
+				this.fragmentsStale = true;
+			}
 		}
 		this.switchTab(this.activeTab); // Ensure the correct CSS display state is active
 	}
@@ -387,6 +409,11 @@ export class NovelChapterView extends ItemView {
 	// Shows a tab and marks it active in the tab bar
 	private switchTab(tab: TabName) {
 		this.activeTab = tab;
+		// Fragments that changed while hidden
+		if (tab === "fragments" && this.fragmentsStale) {
+			this.fragmentsStale = false;
+			this.fragmentsTab.refreshFeed().catch(console.error);
+		}
 		// No project: the selector's empty state is all there is
 		const hasProjects = this.plugin.settings.novelProjects.length > 0;
 		this.chaptersTabContainer.toggle(hasProjects && tab === "chapters");

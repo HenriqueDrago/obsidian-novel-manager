@@ -63,13 +63,7 @@ export interface NovelChapterPluginSettings {
 
 // Define the default settings
 export const DEFAULT_SETTINGS: NovelChapterPluginSettings = {
-	novelProjects: [
-		{
-			id: `default-${Date.now()}`,
-			name: "My First Novel",
-			path: "Novel/Chapters",
-		},
-	], // Default to one example novel project
+	novelProjects: [], // None until the user adds one (the view offers "New project")
 	enableFragments: false,
 	showProperty: true,
 	propertyNameToChange: "status", // Default property to change
@@ -110,7 +104,7 @@ export interface InternalNovelChapterPluginSettings extends NovelChapterPluginSe
 
 // Default settings with internal properties
 export const DEFAULT_INTERNAL_SETTINGS: InternalNovelChapterPluginSettings = {
-	...DEFAULT_SETTINGS, // Spread the external default settings (includes the example project)
+	...DEFAULT_SETTINGS, // Spread the external default settings
 	lastSelectedNovelId: null, // Initialize last selected novel ID to null
 	fragmentSort: "newest",
 };
@@ -209,18 +203,8 @@ export function normalizeSettings(
 	if (!FRAGMENT_SORTS.includes(settings.fragmentSort)) {
 		settings.fragmentSort = "newest";
 	}
-	if (
-		!Array.isArray(settings.novelProjects) ||
-		settings.novelProjects.length === 0
-	) {
-		settings.novelProjects = [
-			{
-				id: generateId(),
-				name: "Default Novel",
-				path: "",
-			},
-		];
-	}
+	// An empty list stays empty (the view shows "No novel projects yet")
+	if (!Array.isArray(settings.novelProjects)) settings.novelProjects = [];
 	settings.novelProjects = settings.novelProjects.map(
 		(p: Partial<NovelProject>): NovelProject => ({
 			id: p.id || generateId(), // Unique even when several projects are repaired at once

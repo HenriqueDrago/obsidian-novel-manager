@@ -12,8 +12,14 @@ import {
 	TFile,
 } from "obsidian";
 import type NovelChapterPlugin from "../main";
-import { FragmentSort, getFragmentsPath, getProjectFragments } from "../core/chapters";
-import { sanitizeFileName } from "../core/utils";
+import {
+	FragmentSort,
+	getCaseVariantWarning,
+	getFragmentsPath,
+	getNameError,
+	getProjectFragments,
+} from "../core/chapters";
+import { sanitizeFileName, titleFromText, uniqueFilePath } from "../core/utils";
 import { ChapterNameModal } from "./ChapterNameModal";
 import { ConfirmationModal } from "./ConfirmationModal";
 import { renderEmptyState } from "./emptyState";
@@ -225,18 +231,13 @@ export class FragmentsTab {
 				return;
 			}
 
-			let rawTitle = titleInput.value.trim();
-			if (!rawTitle) {
-				const words = content.split(/\s+/).slice(0, 4).join(" ");
-				rawTitle =
-					sanitizeFileName(words) ||
-					`Fragment-${Date.now()}`;
-			} else {
-				rawTitle = sanitizeFileName(rawTitle);
-			}
-
+			// A typed title is kept as typed (minus invalid characters and leading dots)
+			const typedTitle = sanitizeFileName(titleInput.value).trim().replace(/^\.+/, "").trim();
 			const folderPath = fragmentsPath;
-			const newPath = normalizePath(`${folderPath}/${rawTitle}.md`);
+			// Untitled: named after its first words (or the time), numbered if that's taken
+			const newPath = typedTitle
+				? normalizePath(`${folderPath}/${typedTitle}.md`)
+				: uniqueFilePath(this.app, folderPath, titleFromText(content) || untitledFragmentName());
 
 			if (!(await this.app.vault.adapter.exists(folderPath))) {
 				try {
@@ -462,6 +463,8 @@ export class FragmentsTab {
 
 	// Asks for a new name, then renames the fragment
 	private promptAndRenameFragment(file: TFile) {
+		const app = this.app;
+		const folderPath = file.parent?.path ?? "";
 		new ChapterNameModal(
 			this.app,
 			"Rename fragment",
@@ -508,6 +511,18 @@ export class FragmentsTab {
 				})();
 			},
 			"Fragment name",
+			(value) => getCaseVariantWarning(app, `${folderPath}/${sanitizeFileName(value).trim()}.md`, file),
+			// Unchanged: nothing to do, so the button is greyed out without a message
+			(value) => value.trim() === file.basename
+				? ""
+				: getNameError(app, folderPath, value, file, "fragment"),
 		).open();
 	}
+}
+
+// Name for a fragment with no usable words: "Fragment 2026-11-09 14.32" (local time)
+function untitledFragmentName(): string {
+	const now = new Date();
+	const pad = (n: number) => String(n).padStart(2, "0");
+	return `Fragment ${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}.${pad(now.getMinutes())}`;
 }

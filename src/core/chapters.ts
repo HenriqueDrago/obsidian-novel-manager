@@ -212,25 +212,26 @@ export function getNewFolderStatus(
 	return "new";
 }
 
-// Why a chapter can't be given this name in a folder, or null; `file` is the chapter being renamed
-export function getChapterNameError(
+// Why a note can't be given this name in a folder, or null; `file` is the note being renamed
+export function getNameError(
 	app: App,
 	folderPath: string,
 	name: string,
 	file?: TFile,
+	noun = "chapter", // For the message: "Another fragment already has this name."
 ): string | null {
 	const sanitized = sanitizeFileName(name).trim();
-	if (!sanitized) return name.trim() ? "Invalid chapter name." : null;
+	if (!sanitized) return name.trim() ? `Invalid ${noun} name.` : null;
 	const path = normalizePath(`${folderPath}/${sanitized}.md`);
-	// The chapter itself doesn't count, so case-only renames are fine
-	return isPathTaken(app, path, file) ? "Another chapter already has this name." : null;
+	// The note itself doesn't count, so case-only renames are fine
+	return isPathTaken(app, path, file) ? `Another ${noun} already has this name.` : null;
 }
 
 // Warning for a name that differs from another file's only in letter case, or null
 export function getCaseVariantWarning(app: App, path: string, file?: TFile): string | null {
 	const variant = findCaseVariant(app, normalizePath(path), file);
 	return variant
-		? `"${variant}" has the same name in a different case. Obsidian's links and searches may mix them up.`
+		? `"${variant}" has the same name in a different case. Obsidian's links and searches may mix them up, and copying or syncing the vault to a system that ignores case (macOS, Windows, mobile) may clash or overwrite one of them.`
 		: null;
 }
 
@@ -330,7 +331,7 @@ export async function updateChapterProperty(
 	const notice = new Notice(
 		createFragment((frag) => {
 			frag.createSpan({
-				text: `Chapter '${file.basename}' ${propertyName} updated. `,
+				text: `Chapter "${file.basename}" ${propertyName} updated. `,
 			});
 			const undoButton = frag.createEl("button", { text: "Undo" });
 			undoButton.addEventListener("click", (event) => {
@@ -367,7 +368,7 @@ async function restoreChapterProperty(
 				}
 			},
 		);
-		new Notice(`Chapter '${file.basename}' ${propertyName} restored.`);
+		new Notice(`Chapter "${file.basename}" ${propertyName} restored.`);
 	} catch (error) {
 		console.error(`Error restoring frontmatter for ${file.path}:`, error);
 		new Notice(`Failed to restore ${propertyName} for ${file.basename}.`);
@@ -678,9 +679,18 @@ export async function createChapter(
 		// Unnumbered: its position goes in the frontmatter
 		const marker = numbering?.marker;
 		if (marker != null) {
-			await app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
-				fm[UNNUMBERED_KEY] = marker;
-			});
+			try {
+				await app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
+					fm[UNNUMBERED_KEY] = marker;
+				});
+			} catch (error) {
+				// E.g. the template's frontmatter is broken. Without its marker it would be numbered,
+				// so the new file (just the template) goes to the trash and the caller undoes the shift
+				console.error("Error writing the unnumbered marker:", error);
+				await app.fileManager.trashFile(file);
+				new Notice("Couldn't create the chapter: its frontmatter (from the template) couldn't be written.");
+				return false;
+			}
 		}
 		new Notice(
 			`Chapter "${sanitizedFileName}" created successfully.`,

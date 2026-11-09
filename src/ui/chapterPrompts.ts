@@ -7,7 +7,7 @@ import {
 	findProjectForFile,
 	getActiveChapterFolder,
 	getCaseVariantWarning,
-	getChapterNameError,
+	getNameError,
 	getChapterFolderOptions,
 	getNewFolderStatus,
 	moveChapterToNewFolder,
@@ -23,6 +23,8 @@ import {
 	planChapterRename,
 	planNewChapter,
 	renumberProject,
+	setChapterExcluded,
+	undoNumbering,
 } from "../core/renumber";
 import { getChapterGroupKey, sanitizeFileName } from "../core/utils";
 import { ChapterNameModal } from "./ChapterNameModal";
@@ -98,7 +100,7 @@ export async function promptAndRenameChapter(
 		// Unchanged: nothing to do, so the button is greyed out without a message
 		(value) => value.trim() === currentName
 			? ""
-			: getChapterNameError(app, file.parent?.path ?? "", value, file),
+			: getNameError(app, file.parent?.path ?? "", value, file),
 	).open();
 }
 
@@ -180,18 +182,23 @@ export async function promptAndCreateNewChapter(
 				const { row, plan: result } = plan(selectedFolderPath, chapterName, excluded);
 				if (!row) return;
 				// Chapters after it shift first, so its name is free
-				if ((await applyNumberingPlan(app, result)) === null) return;
-				await createChapter(app, settings, selectedFolderPath, row.newName, {
+				const shift = await applyNumberingPlan(app, result);
+				if (shift === null) return;
+				const created = await createChapter(app, settings, selectedFolderPath, row.newName, {
 					title,
 					number: row.number,
 					marker: typeof row.newMarker === "number" ? row.newMarker : null,
 				});
+				// No new chapter: the others go back to their old numbers
+				if (!created && shift.paths.length + shift.markers.length > 0) {
+					await undoNumbering(app, shift);
+				}
 			})();
 		},
 		// Otherwise the folder of the chapter you're in, if it belongs to this project
 		defaultFolderPath ?? getActiveChapterFolder(app, settings, currentNovelProject),
 		numberingPreview,
-		(folderPath, name) => getChapterNameError(app, folderPath, name),
+		(folderPath, name) => getNameError(app, folderPath, name),
 		(folderPath, name) => getCaseVariantWarning(app, `${folderPath}/${sanitizeFileName(name).trim()}.md`),
 	).open();
 }
@@ -263,4 +270,27 @@ export function promptAndRenameChapterFolder(
 		},
 		"Folder name",
 	).open();
+}
+
+// Leaves a chapter out of numbering or numbers it again; asks first when its new name
+// differs from another file's only in letter case
+export function promptAndSetChapterExcluded(
+	app: App,
+	settings: NovelChapterPluginSettings,
+	project: NovelProject,
+	file: TFile,
+	excluded: boolean,
+): void {
+	const apply = () => {
+		setChapterExcluded(app, settings, project, file, excluded).catch(console.error);
+	};
+	const row = planChapterRename(app, settings, project, file, undefined, excluded).rows.find(
+		(r) => r.path === file.path,
+	);
+	const warning = row && !row.duplicate ? getCaseVariantWarning(app, row.newPath, file) : null;
+	if (!row || !warning) {
+		apply(); // Taken names are refused (with a notice) when the plan is applied
+		return;
+	}
+	new ConfirmationModal(app, `The chapter will be renamed to "${row.newName}". ${warning}`, apply).open();
 }

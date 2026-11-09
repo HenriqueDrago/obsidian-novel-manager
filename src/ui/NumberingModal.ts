@@ -256,12 +256,31 @@ export class NumberingModal extends Modal {
 		this.close();
 		await this.plugin.saveSettings(false);
 
+		// Puts the numbering settings back as they were (Undo, or a failed project)
+		const restoreSettings = async () => {
+			settings.autoNumbering = previous.autoNumbering;
+			settings.numberFormat = previous.format;
+			settings.numberDigits = previous.digits;
+			settings.numberPerFolder = previous.perFolder;
+			settings.numberSkipOther = previous.skipOther;
+			await this.plugin.saveSettings();
+			this.plugin.settingsTab?.redrawIfOpen(); // Its toggles show the restored settings
+		};
+
 		// One undo for every project
 		const undo: NumberingUndo = { paths: [], markers: [] };
 		for (const { plan } of plans) {
 			const done = await applyNumberingPlan(this.app, plan);
-			undo.paths.push(...(done?.paths ?? []));
-			undo.markers.push(...(done?.markers ?? []));
+			if (!done) {
+				// That project already put itself back; the earlier ones and the settings follow
+				const hadChanges = undo.paths.length + undo.markers.length > 0;
+				if (hadChanges) await undoNumbering(this.app, undo);
+				await restoreSettings();
+				if (hadChanges) new Notice("The other projects and the numbering settings were put back.");
+				return;
+			}
+			undo.paths.push(...done.paths);
+			undo.markers.push(...done.markers);
 		}
 		await this.plugin.saveSettings(); // Redraws the views
 
@@ -275,13 +294,7 @@ export class NumberingModal extends Modal {
 					notice.hide();
 					void (async () => {
 						if (changed > 0) await undoNumbering(this.app, undo);
-						settings.autoNumbering = previous.autoNumbering;
-						settings.numberFormat = previous.format;
-						settings.numberDigits = previous.digits;
-						settings.numberPerFolder = previous.perFolder;
-						settings.numberSkipOther = previous.skipOther;
-						await this.plugin.saveSettings();
-						this.plugin.settingsTab?.redrawIfOpen(); // Its toggles show the restored settings
+						await restoreSettings();
 					})();
 				});
 			}),

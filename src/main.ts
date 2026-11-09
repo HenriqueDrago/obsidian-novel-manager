@@ -8,8 +8,9 @@ import {
 } from "./core/chapters";
 import { promptAndCreateNewChapter } from "./ui/chapterPrompts";
 import { NovelChapterPluginSettingsTab } from "./ui/SettingsTab";
-import { NovelChapterView, VIEW_TYPE } from "./ui/NovelChapterView";
+import { NovelChapterView, RefreshScope, VIEW_TYPE } from "./ui/NovelChapterView";
 import { WordCountCache } from "./core/WordCountCache";
+import { detectCaseSensitivity } from "./core/utils";
 
 // Main plugin class
 export default class NovelChapterPlugin extends Plugin {
@@ -22,6 +23,7 @@ export default class NovelChapterPlugin extends Plugin {
 	// Method to activate the Novel Chapter view
 	async onload() {
 		await this.loadSettings(); // Load plugin settings
+		await detectCaseSensitivity(this.app); // Before any name check
 		this.settingsTab = new NovelChapterPluginSettingsTab(this.app, this);
 		this.addSettingTab(this.settingsTab); // Add settings tab to the plugin
 
@@ -52,7 +54,9 @@ export default class NovelChapterPlugin extends Plugin {
 				}
 				if (!targetProjectId) {
 					new Notice(
-						"Cannot determine project. Please select a project in the novel chapters view.",
+						this.settings.novelProjects.length === 0
+							? "Create a novel project first."
+							: "Cannot determine project. Please select a project in the novel chapters view.",
 					);
 					return;
 				}
@@ -196,9 +200,16 @@ export default class NovelChapterPlugin extends Plugin {
 		);
 	}
 
+	// What changed since the last refresh: chapters, fragments, or both
+	private pendingRefresh: RefreshScope = { chapters: false, fragments: false };
+
 	// Coalesces bursts of file events (e.g. typing in a chapter) into a single refresh
 	private requestViewRefresh = debounce(
-		() => this.refreshNovelChapterView(false),
+		() => {
+			const scope = this.pendingRefresh;
+			this.pendingRefresh = { chapters: false, fragments: false };
+			this.refreshNovelChapterView(false, scope);
+		},
 		200,
 		true,
 	);
@@ -214,7 +225,7 @@ export default class NovelChapterPlugin extends Plugin {
 
 	// Method to unload the plugin
 	onunload() {
-		// Nothing
+		this.saveSettingsDebounced.run(); // A settings edit still waiting to be saved
 	}
 
 	// Loads the plugin settings from storage
@@ -236,10 +247,10 @@ export default class NovelChapterPlugin extends Plugin {
 		this.ribbonIconEl?.toggle(this.settings.showRibbonIcon);
 	}
 
-	// Refreshes all Novel Chapter views in the workspace
-	refreshNovelChapterView(settingsChanged = false) {
+	// Refreshes all Novel Chapter views in the workspace (only the tabs in scope, if given)
+	refreshNovelChapterView(settingsChanged = false, scope?: RefreshScope) {
 		this.getViews().forEach((view) => {
-			view.updateView(settingsChanged).catch(console.error);
+			view.updateView(settingsChanged, scope).catch(console.error);
 		});
 	}
 
@@ -248,18 +259,23 @@ export default class NovelChapterPlugin extends Plugin {
 		if (file instanceof TFile && file.extension !== "md") return; // Ignore non-markdown files (folders pass)
 
 		const paths = [normalizePath(file.path)];
-		if (oldPath) paths.push(normalizePath(oldPath));
-		const isUnder = (folder: string) =>
-			paths.some((p) => p.startsWith(normalizePath(folder) + "/"));
+		if (oldPath) paths.push(normalizePath(oldPath)); // Moving out of a project refreshes it too
+		const isUnder = (path: string, folder: string) => path.startsWith(normalizePath(folder) + "/");
 
-		// Check if the file change is relevant to any novel project (chapters OR fragments)
-		const isRelevantChange = this.settings.novelProjects.some((project) => {
-			if (project.path && isUnder(project.path)) return true;
-			const fragmentsPath = getFragmentsPath(this.settings, project);
-			return !!fragmentsPath && isUnder(fragmentsPath);
-		});
-
-		if (isRelevantChange) this.requestViewRefresh();
+		// Which tab each path touches: a fragments folder, else a project's chapters
+		let relevant = false;
+		for (const path of paths) {
+			for (const project of this.settings.novelProjects) {
+				const fragmentsPath = getFragmentsPath(this.settings, project);
+				// The fragments folder itself too (created, renamed or deleted)
+				if (fragmentsPath && (path === fragmentsPath || isUnder(path, fragmentsPath))) {
+					this.pendingRefresh.fragments = relevant = true;
+				} else if (project.path && isUnder(path, project.path)) {
+					this.pendingRefresh.chapters = relevant = true;
+				}
+			}
+		}
+		if (relevant) this.requestViewRefresh();
 	}
 
 	// Open Novel Manager views (deferred, not-yet-loaded leaves are skipped)

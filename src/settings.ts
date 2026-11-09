@@ -16,6 +16,7 @@ import {
 	WordCountUnit,
 } from "./core/wordCount";
 import { FRAGMENT_SORTS, FragmentSort } from "./core/chapters";
+import { DEFAULT_NUMBER_FORMAT, NumberingOptions } from "./core/numbering";
 
 // Interface for a single novel project configuration
 export interface NovelProject {
@@ -52,6 +53,11 @@ export interface NovelChapterPluginSettings {
 	wordCountStartMarker: string; // Count only after the first occurrence of this text ("" = all)
 	wordCountUnits: WordCountUnit[]; // Any of words, characters, pages (words / wordsPerPage), in that order
 	wordsPerPage: number; // Words in a page, for the pages unit
+	autoNumbering: boolean; // Keep chapter names numbered (the values below are the applied ones)
+	numberFormat: string; // E.g. "Chapter {number} - {title}"
+	numberDigits: number; // Minimum digits (2: 1 -> 01), at least 1
+	numberPerFolder: boolean; // Restart at 1 in each folder, else count through the project
+	numberSkipOther: boolean; // Leave chapters directly in the project folder unnumbered
 }
 
 // Define the default settings
@@ -87,6 +93,11 @@ export const DEFAULT_SETTINGS: NovelChapterPluginSettings = {
 	wordCountStartMarker: "",
 	wordCountUnits: ["words"],
 	wordsPerPage: DEFAULT_WORDS_PER_PAGE,
+	autoNumbering: false,
+	numberFormat: DEFAULT_NUMBER_FORMAT,
+	numberDigits: 1,
+	numberPerFolder: false,
+	numberSkipOther: true,
 };
 
 // Settings plus internal state that isn't shown in the settings tab
@@ -175,6 +186,21 @@ export function normalizeSettings(
 	) {
 		settings.wordsPerPage = DEFAULT_WORDS_PER_PAGE;
 	}
+	if (typeof settings.autoNumbering !== "boolean") {
+		settings.autoNumbering = false;
+	}
+	if (typeof settings.numberFormat !== "string" || !settings.numberFormat.includes("{number}")) {
+		settings.numberFormat = DEFAULT_NUMBER_FORMAT;
+	}
+	if (!Number.isInteger(settings.numberDigits) || settings.numberDigits < 1) {
+		settings.numberDigits = 1;
+	}
+	if (typeof settings.numberPerFolder !== "boolean") {
+		settings.numberPerFolder = false;
+	}
+	if (typeof settings.numberSkipOther !== "boolean") {
+		settings.numberSkipOther = true;
+	}
 	if (!FRAGMENT_SORTS.includes(settings.fragmentSort)) {
 		settings.fragmentSort = "newest";
 	}
@@ -211,4 +237,14 @@ export function normalizeSettings(
 				: null;
 	}
 	return settings;
+}
+
+// The applied numbering settings, as plan options
+export function getNumberingOptions(settings: NovelChapterPluginSettings): NumberingOptions {
+	return {
+		format: settings.numberFormat,
+		digits: settings.numberDigits,
+		perFolder: settings.numberPerFolder,
+		skipOther: settings.numberSkipOther,
+	};
 }

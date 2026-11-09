@@ -14,13 +14,15 @@ import { WordCountCache } from "./core/WordCountCache";
 // Main plugin class
 export default class NovelChapterPlugin extends Plugin {
 	settings!: InternalNovelChapterPluginSettings; // Plugin settings
+	settingsTab: NovelChapterPluginSettingsTab | null = null; // For redrawing after changes made elsewhere
 	// Shared by every view, survives redraws; settings are read lazily (loaded in onload)
 	wordCounts = new WordCountCache(this.app, () => this.settings.wordCountStartMarker);
 
 	// Method to activate the Novel Chapter view
 	async onload() {
 		await this.loadSettings(); // Load plugin settings
-		this.addSettingTab(new NovelChapterPluginSettingsTab(this.app, this)); // Add settings tab to the plugin
+		this.settingsTab = new NovelChapterPluginSettingsTab(this.app, this);
+		this.addSettingTab(this.settingsTab); // Add settings tab to the plugin
 
 		// Register the Novel Chapter view type
 		this.registerView(

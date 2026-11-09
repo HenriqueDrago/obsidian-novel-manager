@@ -1,12 +1,15 @@
 // The plugin's settings screen.
 import {
 	App,
+	ButtonComponent,
 	PluginSettingTab,
 	Setting,
 	TextComponent,
 } from "obsidian";
 import type NovelChapterPlugin from "../main";
-import { DEFAULT_SETTINGS } from "../settings";
+import { DEFAULT_SETTINGS, getNumberingOptions } from "../settings";
+import { DEFAULT_NUMBER_FORMAT, NumberingOptions, validateFormat } from "../core/numbering";
+import { NumberingModal } from "./NumberingModal";
 import { generateId } from "../core/utils";
 import { buildOptions, OptionProgressText, PropertyTypeSetting } from "../core/property";
 import {
@@ -39,6 +42,11 @@ export class NovelChapterPluginSettingsTab extends PluginSettingTab {
 	// Flush any pending debounced save when the settings tab closes
 	hide(): void {
 		this.plugin.saveSettingsDebounced.run();
+	}
+
+	// Redraws the page if it's showing (after settings changed outside it, e.g. an undo)
+	redrawIfOpen(): void {
+		if (this.containerEl.isConnected && this.containerEl.isShown()) this.display();
 	}
 
 	// Display the settings UI
@@ -176,6 +184,10 @@ export class NovelChapterPluginSettingsTab extends PluginSettingTab {
 						await this.plugin.saveSettings(false); // Read when a menu opens; nothing to redraw
 					})
 			);
+
+		// ====== Chapter numbering ======
+		new Setting(containerEl).setName("Chapter numbering").setHeading();
+		this.renderNumberingSettings(containerEl.createDiv());
 
 		// ====== Word counts ======
 		new Setting(containerEl).setName("Word counts").setHeading();
@@ -553,6 +565,122 @@ export class NovelChapterPluginSettingsTab extends PluginSettingTab {
 	}
 
 
+
+	// Chapter numbering: every change that renames files goes through the preview
+	private renderNumberingSettings(containerEl: HTMLElement): void {
+		containerEl.empty();
+		const settings = this.plugin.settings;
+		const on = settings.autoNumbering;
+		const rerender = () => this.renderNumberingSettings(containerEl);
+		// The preview applies or cancels; either way the section then shows the real settings
+		const openPreview = (title: string, options: NumberingOptions) => {
+			new NumberingModal(this.plugin, { title, options, onClose: rerender }).open();
+		};
+
+		new Setting(containerEl)
+			.setName("Number chapters automatically")
+			.setDesc(
+				"Keeps chapter names numbered in order, following the format below. Moving, adding or removing chapters in the view renames the ones after them. You'll see every new name before anything is renamed."
+			)
+			.addToggle((toggle) =>
+				toggle.setValue(on).onChange(async (value) => {
+					if (value) {
+						openPreview("Turn on chapter numbering", getNumberingOptions(settings));
+						return;
+					}
+					// Turning it off renames nothing
+					settings.autoNumbering = false;
+					await this.plugin.saveSettings();
+					rerender();
+				})
+			);
+
+		// Format and digits are drafts until applied (renaming on every keystroke would be chaos)
+		let draftFormat = settings.numberFormat;
+		let draftDigits = settings.numberDigits;
+		let applyButton: ButtonComponent | null = null;
+		const updateApply = () => {
+			const valid = validateFormat(draftFormat).errors.length === 0;
+			const changed = draftFormat !== settings.numberFormat || draftDigits !== settings.numberDigits;
+			applyButton?.setDisabled(!on || !valid || !changed);
+		};
+
+		const formatSetting = new Setting(containerEl)
+			.setName("Format")
+			.setDesc("{number} is the chapter's number and {title} the rest of its name.");
+		const formatNoteEl = formatSetting.descEl.createDiv();
+		const updateFormatNote = () => {
+			const { errors, warnings } = validateFormat(draftFormat);
+			formatNoteEl.empty();
+			for (const text of [...errors, ...warnings]) formatNoteEl.createDiv({ cls: "mod-warning", text });
+		};
+		formatSetting.addText((text) =>
+			text
+				.setPlaceholder(DEFAULT_NUMBER_FORMAT)
+				.setValue(draftFormat)
+				.onChange((value) => {
+					draftFormat = value;
+					updateFormatNote();
+					updateApply();
+				})
+		);
+		updateFormatNote();
+
+		const digitsSetting = new Setting(containerEl)
+			.setName("Minimum digits")
+			.setDesc("Pads numbers with zeros, so 2 gives 01, 02 and so on; larger numbers are never cut.")
+			.addText((text) => {
+				text.inputEl.type = "number";
+				text.inputEl.min = "1";
+				text.setValue(String(draftDigits)).onChange((value) => {
+					const digits = Number(value);
+					// Ignore empty or invalid input until it's a whole number of at least 1
+					if (!Number.isInteger(digits) || digits < 1) return;
+					draftDigits = digits;
+					updateApply();
+				});
+			});
+
+		const applySetting = new Setting(containerEl)
+			.setName("Apply format changes")
+			.setDesc("Shows the new names of every chapter before renaming them.")
+			.addButton((button) => {
+				applyButton = button;
+				button.setButtonText("Apply…").onClick(() =>
+					openPreview("Change chapter numbering", {
+						...getNumberingOptions(settings),
+						format: draftFormat,
+						digits: draftDigits,
+					})
+				);
+			});
+
+		// Toggles open the preview with the new value right away
+		const perFolderSetting = new Setting(containerEl)
+			.setName("Number per folder")
+			.setDesc("Each folder starts at 1. Off: numbers continue through the whole project.")
+			.addToggle((toggle) =>
+				toggle.setValue(settings.numberPerFolder).onChange((value) =>
+					openPreview("Change chapter numbering", { ...getNumberingOptions(settings), perFolder: value })
+				)
+			);
+
+		const otherName = settings.otherGroupName || "Other";
+		const skipOtherSetting = new Setting(containerEl)
+			.setName(`Leave out "${otherName}"`)
+			.setDesc("Chapters directly in the project folder keep their names and aren't numbered.")
+			.addToggle((toggle) =>
+				toggle.setValue(settings.numberSkipOther).onChange((value) =>
+					openPreview("Change chapter numbering", { ...getNumberingOptions(settings), skipOther: value })
+				)
+			);
+
+		// Greyed out while numbering is off (turning it on asks for all of them in the preview)
+		for (const setting of [formatSetting, digitsSetting, applySetting, perFolderSetting, skipOtherSetting]) {
+			setSettingEnabled(setting, on);
+		}
+		updateApply(); // After setSettingEnabled, which would enable the button
+	}
 
 	// Renders the list of novel projects
 	private renderNovelProjects(containerEl: HTMLElement): void {

@@ -707,3 +707,134 @@
 	font-style: normal; /* The empty state's text is italic */
 	color: var(--text-muted);
 }
+
+/* ====== Chapter numbering ====== */
+
+/* Up/down buttons at the end of a numbered row */
+.novel-move-buttons {
+	display: flex;
+	align-items: center;
+	margin-left: auto;
+	flex-shrink: 0;
+	align-self: center;
+}
+.novel-chapter-cell-content .novel-word-count + .novel-move-buttons {
+	margin-left: 0;
+}
+.novel-move-button {
+	padding: 0 2px;
+	--icon-size: var(--icon-xs);
+}
+.novel-move-button.is-disabled {
+	opacity: 0.3;
+	cursor: default;
+	pointer-events: auto; /* Keeps the tooltip saying why */
+}
+.novel-move-button.is-disabled:hover {
+	background-color: transparent;
+}
+/* Desktop: shown on hover or selection (hidden, not removed, so rows don't shift) */
+body:not(.is-mobile) .chapter-data-row:not(:hover):not(.is-selected):not(:focus-within) .novel-move-buttons {
+	visibility: hidden;
+}
+
+/* Bar above the table when names don't follow the numbering */
+.novel-numbering-stale {
+	display: flex;
+	align-items: center;
+	gap: var(--size-4-2);
+	margin-bottom: var(--size-4-2);
+	padding: var(--size-4-1) var(--size-4-2);
+	border-radius: var(--radius-s);
+	background-color: var(--background-modifier-hover);
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+}
+.novel-numbering-stale-icon {
+	display: flex;
+	color: var(--text-warning);
+}
+.novel-numbering-stale-text {
+	flex: 1;
+}
+
+/* Real file name under the rename and new chapter inputs */
+.novel-name-preview {
+	margin-top: var(--size-4-2);
+	font-size: var(--font-ui-small);
+}
+.novel-name-preview-label,
+.novel-name-preview-note {
+	color: var(--text-muted);
+}
+.novel-name-preview-name {
+	font-weight: var(--font-semibold);
+	word-break: break-word;
+}
+
+/* Numbering preview modal */
+.novel-numbering-modal {
+	width: min(720px, 95vw);
+}
+.novel-numbering-summary {
+	margin: var(--size-4-3) 0 var(--size-4-2);
+	font-size: var(--font-ui-small);
+}
+.novel-numbering-list {
+	max-height: 45vh;
+	overflow-y: auto;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-s);
+	padding: var(--size-4-1) var(--size-4-2);
+	font-size: var(--font-ui-small);
+}
+.novel-numbering-project {
+	margin-top: var(--size-4-2);
+	font-weight: var(--font-bold);
+}
+.novel-numbering-group {
+	margin-top: var(--size-4-2);
+	color: var(--text-muted);
+	font-weight: var(--font-semibold);
+}
+.novel-numbering-row {
+	display: flex;
+	align-items: center;
+	gap: var(--size-4-2);
+	padding: 2px 0;
+}
+.novel-numbering-names {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--size-4-1);
+	min-width: 0;
+}
+.novel-numbering-old {
+	color: var(--text-muted);
+	text-decoration: line-through;
+}
+.novel-numbering-arrow {
+	display: flex;
+	color: var(--text-faint);
+	--icon-size: var(--icon-xs);
+}
+.novel-numbering-row.is-unchanged .novel-numbering-new {
+	color: var(--text-muted);
+}
+.novel-numbering-row.is-duplicate .novel-numbering-new {
+	color: var(--text-error);
+}
+.novel-numbering-tag {
+	margin-left: var(--size-4-1);
+	color: var(--text-faint);
+	font-size: var(--font-ui-smaller);
+	font-weight: var(--font-normal);
+}
+.novel-numbering-empty {
+	color: var(--text-faint);
+}
+/* Chapters of a skipped group can't be ticked: no hover glow */
+.novel-numbering-row input[type="checkbox"]:disabled {
+	pointer-events: none;
+}

@@ -17,15 +17,24 @@ import {
 	TFolder,
 } from "obsidian";
 import type NovelChapterPlugin from "../main";
-import type { NovelProject } from "../settings";
+import { getNumberingOptions, NovelProject } from "../settings";
 import {
 	getChapterFolderOptions,
 	getGroupFolderPath,
 	getProjectChapters,
 	getGroupDisplayName,
-	moveChapter,
 	openAdjacentChapter,
+	readNumberingMarker,
 } from "../core/chapters";
+import {
+	isGroupNumbered,
+	isNumberingBusy,
+	moveChapterBy,
+	moveChapterToFolder,
+	planCurrentNumbering,
+	setChapterExcluded,
+} from "../core/renumber";
+import { NumberingModal } from "./NumberingModal";
 import {
 	promptAndCreateNewChapter,
 	promptAndDeleteChapter,
@@ -281,6 +290,76 @@ export class ChaptersTab {
 		).catch(console.error);
 	}
 
+	// The project shown in the table
+	private getSelectedProject(): NovelProject | null {
+		return this.plugin.settings.novelProjects.find((p) => p.id === this.selectedNovelProjectId) ?? null;
+	}
+
+	private isFiltering(): boolean {
+		return this.filterValue !== "all" || this.searchTerm !== "";
+	}
+
+	// Moves a chapter up or down; the keyboard selection follows it to its new name
+	private async moveChapter(file: TFile, project: NovelProject, offset: -1 | 1): Promise<void> {
+		const wasSelected = this.selectedId === `row:${file.path}`;
+		const moved = await moveChapterBy(this.app, this.plugin.settings, project, file, offset);
+		if (moved && wasSelected) this.selectedId = `row:${file.path}`; // The path after the rename
+	}
+
+	// Up and down buttons of a row; faded at the group's borders and while filtering
+	private renderMoveButtons(
+		parentEl: HTMLElement,
+		file: TFile,
+		project: NovelProject,
+		index: number,
+		count: number,
+		isFiltering: boolean,
+	): void {
+		const wrapEl = parentEl.createSpan({ cls: "novel-move-buttons" });
+		const add = (icon: string, label: string, offset: -1 | 1, atBorder: boolean, borderReason: string) => {
+			const disabled = isFiltering || atBorder;
+			const button = wrapEl.createSpan({
+				cls: "clickable-icon novel-move-button",
+				attr: {
+					role: "button",
+					"aria-label": isFiltering
+						? "Clear the search and filter to reorder"
+						: atBorder
+							? borderReason
+							: label,
+					"aria-disabled": String(disabled),
+				},
+			});
+			setIcon(button, icon);
+			button.toggleClass("is-disabled", disabled);
+			button.addEventListener("click", (ev) => {
+				ev.preventDefault();
+				ev.stopPropagation();
+				if (!disabled && !isNumberingBusy()) void this.moveChapter(file, project, offset);
+			});
+		};
+		add("chevron-up", "Move up", -1, index === 0, "Already first in this group");
+		add("chevron-down", "Move down", 1, index === count - 1, "Already last in this group");
+	}
+
+	// Bar above the table when chapter names don't follow the numbering (e.g. renamed elsewhere)
+	private renderNumberingStaleBar(project: NovelProject, changes: number): void {
+		const barEl = this.tableContainer.createDiv({ cls: "novel-numbering-stale" });
+		setIcon(barEl.createSpan({ cls: "novel-numbering-stale-icon" }), "alert-circle");
+		barEl.createSpan({
+			cls: "novel-numbering-stale-text",
+			text: `${changes} ${changes === 1 ? "chapter doesn't" : "chapters don't"} match the numbering.`,
+		});
+		new ButtonComponent(barEl).setButtonText("Renumber…").onClick(() => {
+			new NumberingModal(this.plugin, {
+				title: "Renumber chapters",
+				options: getNumberingOptions(this.plugin.settings),
+				projects: [project],
+				editableOptions: false, // Settings are global; this only fixes one project
+			}).open();
+		});
+	}
+
 	// Whether any group in the table is expanded
 	private anyGroupExpanded(): boolean {
 		return this.currentGroupKeys.some((key) => !this.collapsedGroups.has(key));
@@ -519,6 +598,12 @@ export class ChaptersTab {
 			}
 		};
 
+		// Names out of step with the numbering (changed outside the view): offer to fix them
+		if (this.plugin.settings.autoNumbering && !isNumberingBusy()) {
+			const { changes } = planCurrentNumbering(this.app, this.plugin.settings, currentNovelProject);
+			if (changes.length > 0) this.renderNumberingStaleBar(currentNovelProject, changes.length);
+		}
+
 		const table = this.tableContainer.createEl("table", {
 			cls: "novel-chapter-table",
 		});
@@ -652,8 +737,11 @@ export class ChaptersTab {
 			});
 			if (canDrag) this.attachDropTarget(groupHeaderRow, group.key, currentNovelProject);
 
+			// Reordering buttons for numbered groups
+			const showMoveButtons = isGroupNumbered(this.plugin.settings, group.key);
+
 			// For each file in the group, create a row in the table
-			for (const file of group.files) {
+			group.files.forEach((file, fileIndex) => {
 				const row = tbody.createEl("tr", { cls: "chapter-data-row" });
 				groupRows.push(row);
 				if (keyboardNav) {
@@ -666,8 +754,8 @@ export class ChaptersTab {
 
 				const chapterCell = row.createEl("td");
 				const showRowCount = showWordCounts && wordCountGranularity === "chapters";
-				// With a word count, link and count share a flex row (count on the right)
-				const linkParent = showRowCount
+				// With a word count or move buttons, they share a flex row with the link (on the right)
+				const linkParent = showRowCount || showMoveButtons
 					? chapterCell.createDiv({ cls: "novel-chapter-cell-content" })
 					: chapterCell;
 				const chapterLink = linkParent.createEl("a", {
@@ -680,6 +768,16 @@ export class ChaptersTab {
 						el: linkParent.createSpan({ cls: "novel-word-count" }),
 						file,
 					});
+				}
+				if (showMoveButtons) {
+					this.renderMoveButtons(
+						linkParent,
+						file,
+						currentNovelProject,
+						fileIndex,
+						group.files.length,
+						isFiltering,
+					);
 				}
 
 				if (canDrag) {
@@ -770,7 +868,7 @@ export class ChaptersTab {
 						);
 					}
 				}
-			}
+			});
 		}
 
 		this.highlightActiveChapter(false); // No scrolling on plain refreshes
@@ -872,9 +970,13 @@ export class ChaptersTab {
 			if (!file || !canDrop()) return;
 			ev.preventDefault();
 			this.setDropTarget(null);
-			moveChapter(this.app, file, getGroupFolderPath(project, groupKey)).catch(
-				console.error,
-			);
+			moveChapterToFolder(
+				this.app,
+				this.plugin.settings,
+				project,
+				file,
+				getGroupFolderPath(project, groupKey),
+			).catch(console.error);
 		});
 	}
 
@@ -1019,23 +1121,35 @@ export class ChaptersTab {
 		register([], "F2", (item) => {
 			const { file, groupKey } = parse(item);
 			if (file) {
-				promptAndRenameChapter(this.app, file).catch(console.error);
+				promptAndRenameChapter(this.app, this.plugin.settings, file).catch(console.error);
 				return true;
 			}
 			if (groupKey === null) return false;
-			const project = this.plugin.settings.novelProjects.find(
-				(p) => p.id === this.selectedNovelProjectId,
-			);
+			const project = this.getSelectedProject();
 			const folder = project ? this.getGroupFolder(groupKey, project) : null;
-			if (folder) this.renameGroupFolder(folder);
+			if (project && folder) this.renameGroupFolder(folder, project);
 			return !!folder; // "Other" can't be renamed here
 		});
 		register([], "Delete", (item) => {
 			const { file } = parse(item);
 			if (!file) return false;
-			promptAndDeleteChapter(this.app, file).catch(console.error);
+			promptAndDeleteChapter(this.app, this.plugin.settings, file).catch(console.error);
 			return true;
 		});
+
+		// Alt+Up/Down move the selected chapter within its group (with chapter numbering)
+		const moveKey = (item: HTMLElement | null, offset: -1 | 1) => {
+			const { file } = parse(item);
+			const project = this.getSelectedProject();
+			if (!file || !project) return false;
+			const groupKey = this.groupKeyByPath.get(file.path);
+			if (groupKey === undefined || !isGroupNumbered(this.plugin.settings, groupKey)) return false;
+			if (this.isFiltering()) return true; // Neighbors may be hidden; the buttons say why
+			void this.moveChapter(file, project, offset);
+			return true;
+		};
+		register(["Alt"], "ArrowUp", (item) => moveKey(item, -1));
+		register(["Alt"], "ArrowDown", (item) => moveKey(item, 1));
 		register([], "Escape", (item, control) => {
 			if (!control || !item) return false;
 			this.selectItem(item, true); // Leave the property cell
@@ -1194,8 +1308,8 @@ export class ChaptersTab {
 	}
 
 	// Asks for a new folder name; the group keeps its collapsed state and selection
-	private renameGroupFolder(folder: TFolder): void {
-		promptAndRenameChapterFolder(this.app, folder, (oldName, newName) => {
+	private renameGroupFolder(folder: TFolder, project: NovelProject): void {
+		promptAndRenameChapterFolder(this.app, this.plugin.settings, project, folder, (oldName, newName) => {
 			if (this.collapsedGroups.delete(oldName)) this.collapsedGroups.add(newName);
 			if (this.selectedId === `group:${oldName}`) this.selectedId = `group:${newName}`;
 		});
@@ -1235,7 +1349,7 @@ export class ChaptersTab {
 				.setTitle("Rename")
 				.setIcon("pencil")
 				.onClick(() => {
-					promptAndRenameChapter(this.app, file)
+					promptAndRenameChapter(this.app, this.plugin.settings, file)
 						.catch(console.error); // Prompt the user to rename the chapter
 				}),
 		);
@@ -1246,10 +1360,25 @@ export class ChaptersTab {
 				.setTitle("Delete")
 				.setIcon("trash")
 				.onClick(() => {
-					promptAndDeleteChapter(this.app, file)
+					promptAndDeleteChapter(this.app, this.plugin.settings, file)
 						.catch(console.error); // Prompt the user to confirm deletion of the chapter
 				}),
 		);
+
+		// Numbering: leave the chapter out (it keeps its place) or number it again
+		if (isGroupNumbered(this.plugin.settings, getChapterGroupKey(file, project.path))) {
+			const { excluded } = readNumberingMarker(this.app, file);
+			menu.addItem((item: MenuItem) =>
+				item
+					.setTitle(excluded ? "Number this chapter" : "Leave out of numbering")
+					.setIcon(excluded ? "list-ordered" : "list")
+					.onClick(() => {
+						setChapterExcluded(this.app, this.plugin.settings, project, file, !excluded).catch(
+							console.error,
+						);
+					}),
+			);
+		}
 
 		menu.addSeparator();
 
@@ -1281,9 +1410,13 @@ export class ChaptersTab {
 								.setTitle(option.name)
 								.setIcon(icon)
 								.onClick(() => {
-									moveChapter(this.app, file, option.path).catch(
-										console.error,
-									);
+									moveChapterToFolder(
+										this.app,
+										this.plugin.settings,
+										project,
+										file,
+										option.path,
+									).catch(console.error);
 								});
 							// Disable the folder the chapter is already in
 							if (currentFileParentPath === option.path) {
@@ -1359,7 +1492,7 @@ export class ChaptersTab {
 				item.setDisabled(true);
 				return;
 			}
-			item.onClick(() => this.renameGroupFolder(folder));
+			item.onClick(() => this.renameGroupFolder(folder, project));
 		});
 
 		menu.addSeparator();

@@ -11,6 +11,7 @@ import {
 	sortChapters,
 } from "./utils";
 import { defaultValueYaml } from "./property";
+import { sortGroupEntries, UNNUMBERED_KEY } from "./numbering";
 
 // Helper function for getting files
 export function getMarkdownFilesInFolder(app: App, folderPath: string): TFile[] {
@@ -77,12 +78,51 @@ export function getProjectChapters(
 	if (!project.path || project.path.trim() === "") return [];
 
 	// Same order as the table: subfolder groups first, "Other" last, natural sort
-	return sortChapters(
+	const files = sortChapters(
 		getMarkdownFilesInFolder(app, project.path).filter((file) =>
 			isChapterOf(settings, file, project),
 		),
 		project.path,
 	);
+	if (!settings.autoNumbering) return files;
+
+	// With numbering, each group follows its numbers (and unnumbered chapters their markers)
+	const ordered: TFile[] = [];
+	let start = 0;
+	while (start < files.length) {
+		const key = getChapterGroupKey(files[start], project.path);
+		let end = start;
+		while (end < files.length && getChapterGroupKey(files[end], project.path) === key) end++;
+		const group = files.slice(start, end);
+		if (key === OTHER_GROUP_KEY && settings.numberSkipOther) {
+			ordered.push(...group); // Not numbered: by name
+		} else {
+			const entries = group.map((file) => ({
+				file,
+				path: file.path,
+				name: file.basename,
+				folder: file.parent?.path ?? "",
+				...readNumberingMarker(app, file),
+			}));
+			ordered.push(...sortGroupEntries(entries, settings.numberFormat).map((entry) => entry.file));
+		}
+		start = end;
+	}
+	return ordered;
+}
+
+// A chapter's "unnumbered" marker: whether it's there, and its value when it's a number
+export function readNumberingMarker(
+	app: App,
+	file: TFile,
+): { excluded: boolean; hasMarker: boolean; marker?: number } {
+	const frontmatter = app.metadataCache.getFileCache(file)?.frontmatter;
+	if (!frontmatter || !Object.prototype.hasOwnProperty.call(frontmatter, UNNUMBERED_KEY)) {
+		return { excluded: false, hasMarker: false };
+	}
+	const value: unknown = frontmatter[UNNUMBERED_KEY];
+	const marker = typeof value === "number" && Number.isFinite(value) ? value : undefined;
+	return { excluded: true, hasMarker: true, marker };
 }
 
 // Order of the fragments feed
@@ -178,6 +218,8 @@ export async function moveChapterToNewFolder(
 	project: NovelProject,
 	file: TFile,
 	folderName: string,
+	// How to move it there (numbering moves and renames in one step)
+	move: (file: TFile, folderPath: string) => Promise<void> = (f, path) => moveChapter(app, f, path),
 ): Promise<void> {
 	const sanitized = sanitizeFileName(folderName).trim();
 	// "." and ".." would point at the project folder or above it
@@ -203,7 +245,7 @@ export async function moveChapterToNewFolder(
 			return;
 		}
 	}
-	await moveChapter(app, file, folderPath);
+	await move(file, folderPath);
 }
 
 // Helper to find which project a file belongs to (as a chapter, or also as a fragment)
@@ -520,13 +562,17 @@ export async function createChapter(
 	settings: NovelChapterPluginSettings,
 	selectedFolderPath: string,
 	chapterName: string,
-): Promise<void> {
+	// With numbering: the title for {{title}} (the name holds the number) and the number for {{number}}
+	numbering?: { title: string; number: number | null; marker: number | null },
+): Promise<boolean> {
+	const title = numbering?.title ?? chapterName;
+	const numberText = numbering?.number != null ? String(numbering.number) : "";
 	// Sanitize the chapter name to remove invalid characters
 	const sanitizedFileName = sanitizeFileName(chapterName)
 		.trim();
 	if (sanitizedFileName === "") {
 		new Notice("Invalid chapter name.");
-		return;
+		return false;
 	}
 
 	// Create the folder if it doesn't exist yet
@@ -536,7 +582,7 @@ export async function createChapter(
 		} catch (error) {
 			console.error("Error creating chapter folder:", error);
 			new Notice(`Failed to create folder "${selectedFolderPath}".`);
-			return;
+			return false;
 		}
 	}
 
@@ -550,7 +596,7 @@ export async function createChapter(
 		new Notice(
 			`A chapter named "${sanitizedFileName}.md" already exists.`,
 		);
-		return;
+		return false;
 	}
 
 	// Prepare the content for the new chapter file
@@ -586,7 +632,11 @@ export async function createChapter(
 			// Function replacers so "$" in names isn't treated as a replacement pattern
 			fileContent = fileContent.replace(
 				/\{\{title\}\}/gi,
-				() => chapterName,
+				() => title,
+			);
+			fileContent = fileContent.replace(
+				/\{\{number\}\}/gi,
+				() => numberText,
 			);
 			fileContent = fileContent.replace(
 				/\{\{date\}\}/gi,
@@ -603,23 +653,32 @@ export async function createChapter(
 	if (fileContent === "") {
 		const { propertyNameToChange } = settings;
 		// JSON string = valid YAML double-quoted scalar, safe for ":" , "#", quotes, etc.
-		fileContent = `---\ntitle: ${JSON.stringify(chapterName)}\n`;
+		fileContent = `---\ntitle: ${JSON.stringify(title)}\n`;
 		if (propertyNameToChange)
 			fileContent += `${propertyNameToChange}: ${defaultValueYaml(settings.propertyType)}\n`;
-		fileContent += `---\n\n# ${chapterName}\n\n`;
+		fileContent += `---\n\n# ${title}\n\n`;
 	}
 
 	// Attempt to create the new chapter file in the vault
 	try {
-		await app.vault.create(filePath, fileContent);
+		const file = await app.vault.create(filePath, fileContent);
+		// Unnumbered: its position goes in the frontmatter
+		const marker = numbering?.marker;
+		if (marker != null) {
+			await app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
+				fm[UNNUMBERED_KEY] = marker;
+			});
+		}
 		new Notice(
-			`Chapter "${chapterName}" created successfully.`,
+			`Chapter "${sanitizedFileName}" created successfully.`,
 		);
+		return true;
 	} catch (error) {
 		console.error("Error creating new chapter:", error);
 		new Notice(
 			"Failed to create new chapter. Check console for details.",
 		);
+		return false;
 	}
 }
 

@@ -1,8 +1,9 @@
-import { App, ButtonComponent, Modal, Notice, TextComponent } from "obsidian";
+import { App, ButtonComponent, Modal, Notice, Setting, TextComponent } from "obsidian";
+import { NamePreview, renderNamePreview } from "./RenameChapterModal";
 
 // Modal for creating a new chapter, with folder selection
 export class NewChapterModal extends Modal {
-	onSubmit: (folderPath: string, chapterName: string) => void; // Callback to execute on submit
+	onSubmit: (folderPath: string, chapterName: string, excluded: boolean) => void; // Callback to execute on submit
 	private folderOptions: { name: string; path: string }[]; // List of options for the folder selector
 	private modalTitle: string; // Title of the Modal
 	private ctaButtonText: string; // Text of the call-to-action button
@@ -12,8 +13,10 @@ export class NewChapterModal extends Modal {
 		title: string,
 		ctaText: string,
 		folderOptions: { name: string; path: string }[],
-		onSubmit: (folderPath: string, chapterName: string) => void,
+		onSubmit: (folderPath: string, chapterName: string, excluded: boolean) => void,
 		private defaultFolderPath?: string, // Folder preselected in the dropdown, if it's one of the options
+		// With numbering: the file name a title gets in a folder (the input is then just the title)
+		private numberingPreview?: (folderPath: string, title: string, excluded: boolean) => NamePreview,
 	) {
 		super(app);
 		this.modalTitle = title;
@@ -31,7 +34,7 @@ export class NewChapterModal extends Modal {
 
 		// Text input for the new chapter name
 		const textInput = new TextComponent(contentEl).setPlaceholder(
-			"Chapter name",
+			this.numberingPreview ? "Chapter title" : "Chapter name",
 		);
 		textInput.inputEl.addClass("modal-text-input");
 		textInput.inputEl.focus(); // Focus on the name input first
@@ -59,6 +62,34 @@ export class NewChapterModal extends Modal {
 			folderSelectEl.value = this.defaultFolderPath;
 		}
 
+		// With numbering: the real file name, and a toggle to leave it unnumbered
+		let excluded = false;
+		let canSubmit = true;
+		const numberingPreview = this.numberingPreview;
+		if (numberingPreview) {
+			const previewEl = contentEl.createDiv({ cls: "novel-name-preview" });
+			const update = () => {
+				const title = textInput.getValue().trim();
+				canSubmit = renderNamePreview(
+					previewEl,
+					title ? numberingPreview(folderSelectEl.value, title, excluded) : null,
+					"Created as:",
+				);
+			};
+			textInput.onChange(update);
+			folderSelectEl.addEventListener("change", update);
+			new Setting(contentEl)
+				.setName("Leave out of numbering")
+				.setDesc("No number in its name; it's added after the last chapter of the folder.")
+				.addToggle((toggle) =>
+					toggle.setValue(excluded).onChange((value) => {
+						excluded = value;
+						update();
+					}),
+				);
+			update();
+		}
+
 		const buttonContainer = contentEl.createDiv({
 			cls: "modal-button-container",
 		});
@@ -69,12 +100,13 @@ export class NewChapterModal extends Modal {
 			const selectedFolderPath = folderSelectEl.value; // Get selected folder
 
 			// Check if there's a chapter name selected
-			if (chapterName) {
-				this.close();
-				this.onSubmit(selectedFolderPath, chapterName);
-			} else {
+			if (!chapterName) {
 				new Notice("Chapter name cannot be empty.");
+				return;
 			}
+			if (numberingPreview && !canSubmit) return; // The preview says why
+			this.close();
+			this.onSubmit(selectedFolderPath, chapterName, excluded);
 		};
 
 		new ButtonComponent(buttonContainer)

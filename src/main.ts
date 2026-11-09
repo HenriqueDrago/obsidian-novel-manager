@@ -15,6 +15,7 @@ import { WordCountCache } from "./core/WordCountCache";
 export default class NovelChapterPlugin extends Plugin {
 	settings!: InternalNovelChapterPluginSettings; // Plugin settings
 	settingsTab: NovelChapterPluginSettingsTab | null = null; // For redrawing after changes made elsewhere
+	private ribbonIconEl: HTMLElement | null = null; // Hidden, not removed, so it keeps its place in the ribbon
 	// Shared by every view, survives redraws; settings are read lazily (loaded in onload)
 	wordCounts = new WordCountCache(this.app, () => this.settings.wordCountStartMarker);
 
@@ -162,9 +163,10 @@ export default class NovelChapterPlugin extends Plugin {
 		);
 
 		// Add a ribbon icon to open the Novel Chapter view
-		this.addRibbonIcon("list-ordered", "Open Novel Manager", () =>
+		this.ribbonIconEl = this.addRibbonIcon("list-ordered", "Open Novel Manager", () =>
 			this.activateView().catch(console.error),
 		);
+		this.updateRibbonIcon();
 
 		// Content changes, once the frontmatter is re-read (also fires for new files)
 		this.registerEvent(
@@ -227,6 +229,11 @@ export default class NovelChapterPlugin extends Plugin {
 		await this.saveData(this.settings);
 		// Skipped when the caller redraws on its own (e.g. switching projects)
 		if (refresh) this.refreshNovelChapterView(true);
+	}
+
+	// Shows or hides the ribbon icon (setting)
+	updateRibbonIcon(): void {
+		this.ribbonIconEl?.toggle(this.settings.showRibbonIcon);
 	}
 
 	// Refreshes all Novel Chapter views in the workspace

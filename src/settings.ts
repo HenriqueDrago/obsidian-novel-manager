@@ -45,6 +45,7 @@ export interface NovelChapterPluginSettings {
 	followActiveChapter: boolean; // Switch the view to the project of the file you open
 	dragToMove: boolean; // Drag chapter rows onto another group to move them (desktop)
 	revealInFileMenu: boolean; // "Reveal in Novel Manager" in Obsidian's file menus
+	showRibbonIcon: boolean; // The ribbon icon that opens the view
 	keyboardNavigation: boolean; // Arrow keys, Enter, F2, Delete in the chapter table
 	showChapterCount: boolean; // "24 chapters" on the project and group stats lines
 	showWordCounts: boolean; // Word counts in the table (reads chapter files)
@@ -85,6 +86,7 @@ export const DEFAULT_SETTINGS: NovelChapterPluginSettings = {
 	followActiveChapter: false,
 	dragToMove: true,
 	revealInFileMenu: true,
+	showRibbonIcon: true,
 	keyboardNavigation: false,
 	showChapterCount: true,
 	showWordCounts: false,
@@ -151,6 +153,9 @@ export function normalizeSettings(
 	}
 	if (typeof settings.revealInFileMenu !== "boolean") {
 		settings.revealInFileMenu = true;
+	}
+	if (typeof settings.showRibbonIcon !== "boolean") {
+		settings.showRibbonIcon = true;
 	}
 	if (typeof settings.keyboardNavigation !== "boolean") {
 		settings.keyboardNavigation = false;

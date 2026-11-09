@@ -185,6 +185,20 @@ export class NovelChapterPluginSettingsTab extends PluginSettingTab {
 					})
 			);
 
+		// Create setting for the ribbon icon that opens the view
+		new Setting(containerEl)
+			.setName("Show ribbon icon")
+			.setDesc("An icon in the left ribbon that opens the view. The open view command always works.")
+			.addToggle((toggle) =>
+				toggle
+					.setValue(this.plugin.settings.showRibbonIcon)
+					.onChange(async (value) => {
+						this.plugin.settings.showRibbonIcon = value;
+						this.plugin.updateRibbonIcon();
+						await this.plugin.saveSettings(false); // Nothing in the views changes
+					})
+			);
+
 		// ====== Chapter numbering ======
 		new Setting(containerEl).setName("Chapter numbering").setHeading();
 		this.renderNumberingSettings(containerEl.createDiv());

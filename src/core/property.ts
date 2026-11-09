@@ -184,11 +184,6 @@ export function checkboxState(v: unknown, loose: boolean): true | false | "mixed
 	return "mixed"; // Shown as a dash, so it isn't overwritten by accident
 }
 
-// YAML for the property in a new chapter's default frontmatter
-export function defaultValueYaml(type: PropertyTypeSetting): string {
-	return type === "checkbox" ? "false" : '""';
-}
-
 // Short, readable form of a frontmatter value for labels and dialogs
 export function describeValue(v: unknown, maxLength = 40): string {
 	const text = typeof v === "string" ? v : (JSON.stringify(v) ?? String(v));

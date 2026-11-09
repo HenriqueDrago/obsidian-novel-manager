@@ -3,6 +3,7 @@ import { ButtonComponent, Modal, Notice, Setting, setIcon } from "obsidian";
 import type NovelChapterPlugin from "../main";
 import { getNumberingOptions, NovelProject } from "../settings";
 import { getGroupDisplayName } from "../core/chapters";
+import { isCaseSensitiveFileSystem } from "../core/utils";
 import {
 	NumberingGroup,
 	NumberingOptions,
@@ -146,7 +147,7 @@ export class NumberingModal extends Modal {
 					excluded: this.exclusions.get(entry.path) ?? entry.excluded,
 				})),
 			}));
-			return { project, plan: planNumbering(edited, this.parseFormat, this.draft) };
+			return { project, plan: planNumbering(edited, this.parseFormat, this.draft, isCaseSensitiveFileSystem()) };
 		});
 	}
 

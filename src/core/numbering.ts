@@ -164,6 +164,7 @@ export function planNumbering(
 	groups: NumberingGroup[],
 	parseFormat: string, // Format the names are currently written in
 	options: NumberingOptions,
+	caseSensitive = false, // Whether "namer" and "Namer" are different files (Linux)
 ): NumberingPlan {
 	const rows: NumberingRow[] = [];
 	let counter = 0; // Last number given out
@@ -224,10 +225,10 @@ export function planNumbering(
 		rows.push(...groupRows);
 	}
 
-	// Two chapters with the same final path (case-insensitive, like most file systems)
+	// Two chapters with the same final path (ignoring case, unless the file system doesn't)
 	const byPath = new Map<string, NumberingRow[]>();
 	for (const row of rows) {
-		const key = row.newPath.toLowerCase();
+		const key = caseSensitive ? row.newPath : row.newPath.toLowerCase();
 		byPath.set(key, [...(byPath.get(key) ?? []), row]);
 	}
 	let hasDuplicates = false;

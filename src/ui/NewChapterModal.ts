@@ -1,4 +1,4 @@
-import { App, ButtonComponent, Modal, Notice, Setting, TextComponent } from "obsidian";
+import { App, ButtonComponent, Modal, Setting, TextComponent } from "obsidian";
 import { NamePreview, renderNamePreview } from "./RenameChapterModal";
 
 // Modal for creating a new chapter, with folder selection
@@ -17,6 +17,10 @@ export class NewChapterModal extends Modal {
 		private defaultFolderPath?: string, // Folder preselected in the dropdown, if it's one of the options
 		// With numbering: the file name a title gets in a folder (the input is then just the title)
 		private numberingPreview?: (folderPath: string, title: string, excluded: boolean) => NamePreview,
+		// Without numbering: why a name can't be used in a folder (e.g. it's taken), or null
+		private nameError?: (folderPath: string, name: string) => string | null,
+		// Without numbering: a warning that doesn't block, or null
+		private nameWarning?: (folderPath: string, name: string) => string | null,
 	) {
 		super(app);
 		this.modalTitle = title;
@@ -29,6 +33,7 @@ export class NewChapterModal extends Modal {
 	onOpen() {
 		const { contentEl } = this;
 		contentEl.empty();
+		this.modalEl.addClass("novel-chapter-modal"); // Scopes the greyed-out button style
 
 		contentEl.createEl("h2", { text: this.modalTitle });
 
@@ -62,23 +67,15 @@ export class NewChapterModal extends Modal {
 			folderSelectEl.value = this.defaultFolderPath;
 		}
 
-		// With numbering: the real file name, and a toggle to leave it unnumbered
+		// With numbering: the real file name; without: why the name can't be used
+		const previewEl = contentEl.createDiv({ cls: "novel-name-preview" });
 		let excluded = false;
-		let canSubmit = true;
 		const numberingPreview = this.numberingPreview;
+		const nameError = this.nameError;
+		const nameWarning = this.nameWarning;
 		if (numberingPreview) {
-			const previewEl = contentEl.createDiv({ cls: "novel-name-preview" });
-			const update = () => {
-				const title = textInput.getValue().trim();
-				canSubmit = renderNamePreview(
-					previewEl,
-					title ? numberingPreview(folderSelectEl.value, title, excluded) : null,
-					"Created as:",
-				);
-			};
-			textInput.onChange(update);
-			folderSelectEl.addEventListener("change", update);
 			new Setting(contentEl)
+				.setClass("novel-modal-toggle")
 				.setName("Leave out of numbering")
 				.setDesc("No number in its name; it's added after the last chapter of the folder.")
 				.addToggle((toggle) =>
@@ -87,36 +84,50 @@ export class NewChapterModal extends Modal {
 						update();
 					}),
 				);
-			update();
 		}
 
 		const buttonContainer = contentEl.createDiv({
 			cls: "modal-button-container",
 		});
-
-		// OnSubmit action (confirm button)
-		const doSubmit = () => {
-			const chapterName = textInput.getValue().trim(); // Get chapter name
-			const selectedFolderPath = folderSelectEl.value; // Get selected folder
-
-			// Check if there's a chapter name selected
-			if (!chapterName) {
-				new Notice("Chapter name cannot be empty.");
-				return;
-			}
-			if (numberingPreview && !canSubmit) return; // The preview says why
-			this.close();
-			this.onSubmit(selectedFolderPath, chapterName, excluded);
-		};
-
-		new ButtonComponent(buttonContainer)
+		const submitButton = new ButtonComponent(buttonContainer)
 			.setButtonText(this.ctaButtonText)
-			.setCta()
-			.onClick(doSubmit);
-
+			.setCta();
 		new ButtonComponent(buttonContainer)
 			.setButtonText("Cancel")
 			.onClick(() => this.close());
+
+		// Greys out the button while the name is empty or can't be used
+		let canSubmit = false;
+		const update = () => {
+			const name = textInput.getValue().trim();
+			const folderPath = folderSelectEl.value;
+			if (numberingPreview) {
+				canSubmit = renderNamePreview(
+					previewEl,
+					name ? numberingPreview(folderPath, name, excluded) : null,
+					"Created as:",
+				);
+			} else {
+				const error = name ? nameError?.(folderPath, name) ?? null : null;
+				const warning = name && !error ? nameWarning?.(folderPath, name) ?? null : null;
+				previewEl.empty();
+				const message = error ?? warning;
+				if (message) previewEl.createDiv({ cls: "mod-warning", text: message });
+				canSubmit = name !== "" && error === null;
+			}
+			submitButton.setDisabled(!canSubmit);
+		};
+		textInput.onChange(update);
+		folderSelectEl.addEventListener("change", update);
+		update();
+
+		// OnSubmit action (confirm button)
+		const doSubmit = () => {
+			if (!canSubmit) return; // Empty, or the message says why
+			this.close();
+			this.onSubmit(folderSelectEl.value, textInput.getValue().trim(), excluded);
+		};
+		submitButton.onClick(doSubmit);
 
 		textInput.inputEl.addEventListener("keydown", (e) => {
 			// Ignore Enter while an input method is still composing

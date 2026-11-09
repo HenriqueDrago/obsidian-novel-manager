@@ -10,7 +10,7 @@ import {
 	planNumbering,
 	UNNUMBERED_KEY,
 } from "./numbering";
-import { getChapterGroupKey, naturalCompare, OTHER_GROUP_KEY } from "./utils";
+import { getChapterGroupKey, isCaseSensitiveFileSystem, naturalCompare, OTHER_GROUP_KEY } from "./utils";
 
 // Stands in for a chapter that doesn't exist yet in a plan (no real path starts with a NUL)
 const NEW_CHAPTER_PATH = "\0new-chapter";
@@ -77,7 +77,7 @@ function planProject(
 ): NumberingPlan {
 	const groups = getNumberingGroups(app, settings, project);
 	edit?.(groups);
-	return planNumbering(groups, settings.numberFormat, options);
+	return planNumbering(groups, settings.numberFormat, options, isCaseSensitiveFileSystem());
 }
 
 // ====== Applying ======

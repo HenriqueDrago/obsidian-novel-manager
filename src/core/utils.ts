@@ -1,5 +1,5 @@
 // Small helpers: path checks, sorting, IDs and filename cleanup
-import { normalizePath, TFile } from "obsidian";
+import { App, normalizePath, Platform, TFile, TFolder } from "obsidian";
 
 // Whether a file is inside a folder (at any depth)
 export function isFileInFolder(file: TFile, folderPath: string): boolean {
@@ -54,4 +54,34 @@ export function sortChapters(files: TFile[], projectPath: string): TFile[] {
 		}
 		return naturalCompare(a.path, b.path); // Then by path within the group
 	});
+}
+
+// Linux file systems tell "namer" and "Namer" apart; macOS, Windows and mobile storage usually don't
+export function isCaseSensitiveFileSystem(): boolean {
+	return Platform.isLinux;
+}
+
+// Whether a path is taken by another file or folder (any letter case where the file system ignores it)
+export function isPathTaken(app: App, path: string, except?: TFile): boolean {
+	const existing = app.vault.getAbstractFileByPath(path);
+	if (existing) return existing !== except;
+	if (isCaseSensitiveFileSystem()) return false;
+	const slash = path.lastIndexOf("/");
+	const parent = app.vault.getAbstractFileByPath(slash === -1 ? "/" : path.slice(0, slash));
+	if (!(parent instanceof TFolder)) return false;
+	const lower = path.toLowerCase();
+	return parent.children.some((child) => child !== except && child.path.toLowerCase() === lower);
+}
+
+// Another file whose path differs only in letter case (only possible where the file system allows it)
+export function findCaseVariant(app: App, path: string, except?: TFile): string | null {
+	if (!isCaseSensitiveFileSystem()) return null; // There it's the same name, so it's taken
+	const slash = path.lastIndexOf("/");
+	const parent = app.vault.getAbstractFileByPath(slash === -1 ? "/" : path.slice(0, slash));
+	if (!(parent instanceof TFolder)) return null;
+	const lower = path.toLowerCase();
+	const variant = parent.children.find(
+		(child) => child !== except && child.path !== path && child.path.toLowerCase() === lower,
+	);
+	return variant ? variant.name : null;
 }

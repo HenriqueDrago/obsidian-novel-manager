@@ -276,12 +276,13 @@ export class NovelChapterPluginSettingsTab extends PluginSettingTab {
 			});
 		const detailSetting = new Setting(containerEl)
 			.setName("Detail")
-			.setDesc("Show counts on every chapter, or only on groups and the total.")
+			.setDesc("Show counts on every chapter, only on groups and the total, or only on chapters.")
 			.addDropdown((dropdown) => {
 				dropdown
 					.addOptions({
 						chapters: "Chapters, groups and total",
 						groups: "Groups and total only",
+						"chapters-only": "Chapters only",
 					})
 					.setValue(this.plugin.settings.wordCountGranularity)
 					.onChange(async (value) => {

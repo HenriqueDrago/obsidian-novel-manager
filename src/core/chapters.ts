@@ -9,8 +9,9 @@ import {
 	generateId,
 	sanitizeFileName,
 	sortChapters,
+	findCaseVariant,
+	isPathTaken,
 } from "./utils";
-import { defaultValueYaml } from "./property";
 import { sortGroupEntries, UNNUMBERED_KEY } from "./numbering";
 
 // Helper function for getting files
@@ -209,6 +210,28 @@ export function getNewFolderStatus(
 	if (getGroupDisplayName(settings, sanitized) !== sanitized) return "other-name";
 	if (app.vault.getAbstractFileByPath(folderPath) instanceof TFolder) return "exists";
 	return "new";
+}
+
+// Why a chapter can't be given this name in a folder, or null; `file` is the chapter being renamed
+export function getChapterNameError(
+	app: App,
+	folderPath: string,
+	name: string,
+	file?: TFile,
+): string | null {
+	const sanitized = sanitizeFileName(name).trim();
+	if (!sanitized) return name.trim() ? "Invalid chapter name." : null;
+	const path = normalizePath(`${folderPath}/${sanitized}.md`);
+	// The chapter itself doesn't count, so case-only renames are fine
+	return isPathTaken(app, path, file) ? "Another chapter already has this name." : null;
+}
+
+// Warning for a name that differs from another file's only in letter case, or null
+export function getCaseVariantWarning(app: App, path: string, file?: TFile): string | null {
+	const variant = findCaseVariant(app, normalizePath(path), file);
+	return variant
+		? `"${variant}" has the same name in a different case. Obsidian's links and searches may mix them up.`
+		: null;
 }
 
 // Moves a chapter into a subfolder of the project folder, creating it if needed
@@ -599,7 +622,7 @@ export async function createChapter(
 		return false;
 	}
 
-	// Prepare the content for the new chapter file
+	// No template (or an empty or missing one): a blank note
 	let fileContent = "";
 
 	// If a chapter template path is configured, read the template file
@@ -644,19 +667,9 @@ export async function createChapter(
 			);
 		} else {
 			new Notice(
-				`Template file not found at "${templatePath}". Creating a default chapter.`,
+				`Template file not found at "${templatePath}". Creating a blank chapter.`,
 			);
 		}
-	}
-
-	// No template (or an empty one): default chapter structure
-	if (fileContent === "") {
-		const { propertyNameToChange } = settings;
-		// JSON string = valid YAML double-quoted scalar, safe for ":" , "#", quotes, etc.
-		fileContent = `---\ntitle: ${JSON.stringify(title)}\n`;
-		if (propertyNameToChange)
-			fileContent += `${propertyNameToChange}: ${defaultValueYaml(settings.propertyType)}\n`;
-		fileContent += `---\n\n# ${title}\n\n`;
 	}
 
 	// Attempt to create the new chapter file in the vault

@@ -6,6 +6,8 @@ import {
 	deleteChapter,
 	findProjectForFile,
 	getActiveChapterFolder,
+	getCaseVariantWarning,
+	getChapterNameError,
 	getChapterFolderOptions,
 	getNewFolderStatus,
 	moveChapterToNewFolder,
@@ -69,6 +71,7 @@ export async function promptAndRenameChapter(
 				return {
 					name: row?.newName ?? "",
 					error: row?.duplicate ? "Another chapter already has this name." : undefined,
+					warning: row ? getCaseVariantWarning(app, row.newPath, file) ?? undefined : undefined,
 					note: renumberNote(result, file.path),
 				};
 			},
@@ -86,12 +89,16 @@ export async function promptAndRenameChapter(
 		"Rename",
 		currentName,
 		(newName) => {
-			if (newName && newName !== currentName) {
-				renameChapter(app, file, newName).catch((error) => {
-					console.error("Error renaming chapter:", error);
-				});
-			}
+			renameChapter(app, file, newName).catch((error) => {
+				console.error("Error renaming chapter:", error);
+			});
 		},
+		"Chapter name",
+		(value) => getCaseVariantWarning(app, `${file.parent?.path ?? ""}/${sanitizeFileName(value).trim()}.md`, file),
+		// Unchanged: nothing to do, so the button is greyed out without a message
+		(value) => value.trim() === currentName
+			? ""
+			: getChapterNameError(app, file.parent?.path ?? "", value, file),
 	).open();
 }
 
@@ -151,6 +158,7 @@ export async function promptAndCreateNewChapter(
 				return {
 					name: row?.newName ?? "",
 					error: row?.duplicate ? "Another chapter already has this name." : undefined,
+					warning: row ? getCaseVariantWarning(app, row.newPath) ?? undefined : undefined,
 					note: renumberNote(result, null),
 				};
 			}
@@ -183,6 +191,8 @@ export async function promptAndCreateNewChapter(
 		// Otherwise the folder of the chapter you're in, if it belongs to this project
 		defaultFolderPath ?? getActiveChapterFolder(app, settings, currentNovelProject),
 		numberingPreview,
+		(folderPath, name) => getChapterNameError(app, folderPath, name),
+		(folderPath, name) => getCaseVariantWarning(app, `${folderPath}/${sanitizeFileName(name).trim()}.md`),
 	).open();
 }
 

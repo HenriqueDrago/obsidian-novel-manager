@@ -1,6 +1,7 @@
 // Word and character counting, pages, and formatting (no Obsidian imports, testable in Node)
 
-export const WORD_COUNT_GRANULARITIES = ["chapters", "groups"] as const;
+// chapters = everywhere, groups = headers only, chapters-only = rows only
+export const WORD_COUNT_GRANULARITIES = ["chapters", "groups", "chapters-only"] as const;
 export type WordCountGranularity = (typeof WORD_COUNT_GRANULARITIES)[number];
 export const WORD_COUNT_FORMATS = ["short", "exact"] as const;
 export type WordCountFormat = (typeof WORD_COUNT_FORMATS)[number];

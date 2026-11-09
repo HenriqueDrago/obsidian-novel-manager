@@ -631,7 +631,7 @@ export class ChaptersTab {
 		// Stats line under a header: "24 chapters · 86.2K words", progress on the right.
 		// "3 of 24 chapters" while a search or filter hides some.
 		const renderStats = (parentEl: HTMLElement, files: TFile[], unfiltered: number) => {
-			const showCounts = showWordCounts && files.length > 0;
+			const showCounts = showWordCounts && wordCountGranularity !== "chapters-only" && files.length > 0;
 			const showBar = showProgress && files.length > 0;
 			if (!showChapterCount && !showCounts && !showBar) return; // Nothing to show: no empty line
 			const lineEl = parentEl.createDiv({ cls: "novel-stats-line" });
@@ -753,7 +753,7 @@ export class ChaptersTab {
 				if (startCollapsed) row.hide();
 
 				const chapterCell = row.createEl("td");
-				const showRowCount = showWordCounts && wordCountGranularity === "chapters";
+				const showRowCount = showWordCounts && wordCountGranularity !== "groups";
 				// With a word count or move buttons, they share a flex row with the link (on the right)
 				const linkParent = showRowCount || showMoveButtons
 					? chapterCell.createDiv({ cls: "novel-chapter-cell-content" })

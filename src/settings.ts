@@ -49,7 +49,7 @@ export interface NovelChapterPluginSettings {
 	keyboardNavigation: boolean; // Arrow keys, Enter, F2, Delete in the chapter table
 	showChapterCount: boolean; // "24 chapters" on the project and group stats lines
 	showWordCounts: boolean; // Word counts in the table (reads chapter files)
-	wordCountGranularity: WordCountGranularity; // Per chapter too, or only groups and total
+	wordCountGranularity: WordCountGranularity; // Chapters and headers, headers only, or chapters only
 	wordCountFormat: WordCountFormat; // "3.9K" or "3,912"
 	wordCountStartMarker: string; // Count only after the first occurrence of this text ("" = all)
 	wordCountUnits: WordCountUnit[]; // Any of words, characters, pages (words / wordsPerPage), in that order

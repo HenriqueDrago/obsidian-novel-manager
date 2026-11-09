@@ -1,4 +1,4 @@
-import { App, ButtonComponent, Modal, Notice, TextComponent } from "obsidian";
+import { App, ButtonComponent, Modal, TextComponent } from "obsidian";
 
 // Modal for getting chapter name (Used for creating and renaming chapters)
 export class ChapterNameModal extends Modal {
@@ -9,6 +9,7 @@ export class ChapterNameModal extends Modal {
 	private ctaButtonText: string; // Text for the call-to-action button
 	private placeholder: string; // Placeholder for the name input
 	private getNote?: (value: string) => string | null; // Warning shown under the input while typing
+	private getError?: (value: string) => string | null; // Blocks submitting: a message, or "" to block silently
 
 	constructor(
 		app: App,
@@ -18,6 +19,7 @@ export class ChapterNameModal extends Modal {
 		onSubmit: (result: string) => void,
 		placeholder = "Chapter name",
 		getNote?: (value: string) => string | null,
+		getError?: (value: string) => string | null,
 	) {
 		super(app);
 		this.modalTitle = title;
@@ -26,12 +28,14 @@ export class ChapterNameModal extends Modal {
 		this.onSubmit = onSubmit;
 		this.placeholder = placeholder;
 		this.getNote = getNote;
+		this.getError = getError;
 	}
 
 	// When opened, display the modal with input field and buttons
 	onOpen() {
 		const { contentEl } = this; // Get the content element of the modal
 		contentEl.empty(); // Clear existing content
+		this.modalEl.addClass("novel-chapter-modal"); // Scopes the greyed-out button style
 
 		contentEl.createEl("h2", { text: this.modalTitle }); // Set the modal title
 
@@ -46,18 +50,9 @@ export class ChapterNameModal extends Modal {
 		textInput.inputEl.addClass("modal-text-input");
 		textInput.inputEl.focus(); // Focus the input field when the modal opens
 
-		// Optional live warning about what the typed name will do
-		if (this.getNote) {
-			const getNote = this.getNote;
-			const noteEl = contentEl.createDiv({ cls: "mod-warning novel-modal-note" });
-			const updateNote = () => {
-				const note = getNote(textInput.getValue());
-				noteEl.setText(note ?? "");
-				noteEl.toggle(note !== null);
-			};
-			textInput.onChange(updateNote);
-			updateNote();
-		}
+		// Optional live warning about what the typed name will do, or why it can't be used
+		const noteEl = contentEl.createDiv({ cls: "mod-warning novel-modal-note" });
+		noteEl.hide();
 
 		const buttonContainer = contentEl.createDiv({
 			cls: "modal-button-container",
@@ -68,17 +63,26 @@ export class ChapterNameModal extends Modal {
 			.setButtonText(this.ctaButtonText)
 			.setCta(); // Set the button as a call-to-action
 
+		// Greys out the button while the name is empty or can't be used
+		let canSubmit = false;
+		const update = () => {
+			const value = textInput.getValue();
+			const error = this.getError?.(value) ?? null;
+			const note = error || this.getNote?.(value) || null;
+			noteEl.setText(note ?? "");
+			noteEl.toggle(note !== null);
+			canSubmit = value.trim() !== "" && error === null;
+			submitButton.setDisabled(!canSubmit);
+		};
+		textInput.onChange(update);
+		update();
+
 		// Function to handle the submit action
 		const doSubmit = () => {
-			const chapterName = textInput.getValue().trim();
-			// Submit only a non-empty name
-			if (chapterName) {
-				this.result = chapterName;
-				this.close();
-				this.onSubmit(this.result);
-			} else {
-				new Notice("Name cannot be empty.");
-			}
+			if (!canSubmit) return; // Empty, or the note says why
+			this.result = textInput.getValue().trim();
+			this.close();
+			this.onSubmit(this.result);
 		};
 
 		submitButton.onClick(doSubmit); // Attach the submit function to the button click event

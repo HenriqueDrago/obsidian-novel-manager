@@ -838,3 +838,15 @@ body:not(.is-mobile) .chapter-data-row:not(:hover):not(.is-selected):not(:focus-
 .novel-numbering-row input[type="checkbox"]:disabled {
 	pointer-events: none;
 }
+
+/* Greyed-out submit button in the chapter dialogs (name empty or can't be used) */
+.novel-chapter-modal .modal-button-container button:disabled {
+	opacity: 0.5;
+	pointer-events: none; /* No hover effect */
+}
+
+/* "Leave out of numbering" in the chapter dialogs: no divider above it */
+/* Beats Obsidian's ".modal:not(.mod-settings) .setting-item:not(.setting-item-heading)" */
+.modal.novel-chapter-modal .modal-content .setting-item.novel-modal-toggle {
+	border-top: none;
+}

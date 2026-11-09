@@ -33,11 +33,18 @@ import {
 	promptAndRenameChapter,
 	promptAndRenameChapterFolder,
 } from "./chapterPrompts";
-import { buildOptions, checkboxState, filterMatches } from "../core/property";
+import {
+	buildOptions,
+	checkboxState,
+	filterMatches,
+	summarizeCheckbox,
+	summarizeOptions,
+} from "../core/property";
 import { getChapterGroupKey, naturalCompare, OTHER_GROUP_KEY } from "../core/utils";
 import type { TabContext } from "./NovelChapterView";
 import { renderPropertyCheckbox, renderPropertyDropdown } from "./PropertyCell";
 import { renderEmptyState } from "./emptyState";
+import { renderCheckboxProgress, renderOptionProgress } from "./ProgressSummary";
 
 // Filter values for the checkbox property type
 const FILTER_CHECKED = "__novel-manager-checked__";
@@ -471,6 +478,29 @@ export class ChaptersTab {
 			}
 		}
 
+		// Progress summary of some chapters' property values (read-only), if enabled for this type
+		const { checkboxProgress, optionProgress, optionProgressText } =
+			this.plugin.settings;
+		const showProgress =
+			showPropertyColumn && (isCheckbox ? checkboxProgress : optionProgress);
+		const renderProgress = (parentEl: HTMLElement, files: TFile[]) => {
+			if (!showProgress || files.length === 0) return;
+			const values: unknown[] = files.map(
+				(file) =>
+					this.app.metadataCache.getFileCache(file)?.frontmatter?.[propertyNameToChange] as unknown,
+			);
+			if (isCheckbox) {
+				renderCheckboxProgress(parentEl, summarizeCheckbox(values, looseMatching));
+			} else {
+				renderOptionProgress(
+					parentEl,
+					summarizeOptions(values, options, looseMatching),
+					options,
+					optionProgressText,
+				);
+			}
+		};
+
 		const table = this.tableContainer.createEl("table", {
 			cls: "novel-chapter-table",
 		});
@@ -485,7 +515,16 @@ export class ChaptersTab {
 		if (showPropertyColumn) {
 			const propertyHeader =
 				propertyColumnHeader.trim() || propertyNameToChange;
-			headerRow.createEl("th", { text: propertyHeader });
+			const propertyTh = headerRow.createEl("th");
+			const propertyThContent = propertyTh.createDiv({ cls: "novel-column-header-content" });
+			propertyThContent.createSpan({ text: propertyHeader });
+			// Whole project, the same chapters as the total count
+			renderProgress(
+				propertyThContent,
+				this.plugin.settings.excludeOtherFromCount
+					? groups.filter((g) => g.key !== OTHER_GROUP_KEY).flatMap((g) => g.files)
+					: groups.flatMap((g) => g.files),
+			);
 		}
 
 		// Group headers stick right below the column header, so track its height
@@ -532,16 +571,18 @@ export class ChaptersTab {
 			const groupHeaderCell = groupHeaderRow.createEl("td");
 			groupHeaderCell.colSpan = numColumns;
 
-			// Create a toggle icon for expanding/collapsing the group
-			const iconEl = groupHeaderCell.createSpan({
+			// One flex row (a td can't be flex): toggle icon, name and count, progress on the right
+			const groupHeaderContent = groupHeaderCell.createDiv({
+				cls: "chapter-group-header-content",
+			});
+			const iconEl = groupHeaderContent.createSpan({
 				cls: "group-toggle-icon",
 			});
 			setIcon(iconEl, startCollapsed ? "chevron-right" : "chevron-down");
-
-			// Create a span for the group name and count
-			groupHeaderCell.createSpan({
-				text: ` ${group.name} (${group.files.length})`,
+			groupHeaderContent.createSpan({
+				text: `${group.name} (${group.files.length})`,
 			});
+			renderProgress(groupHeaderContent, group.files);
 
 			// Clicking the header collapses or expands the group
 			groupHeaderRow.addEventListener("click", () => this.toggleGroup(group.key));

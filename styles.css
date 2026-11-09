@@ -263,7 +263,7 @@
 	box-shadow: inset 0 0 0 2px var(--interactive-accent);
 }
 .novel-chapter-table tr.is-drop-target-row td {
-	background-color: rgba(var(--interactive-accent-rgb), 0.08);
+	background-color: color-mix(in srgb, var(--interactive-accent) 8%, transparent);
 }
 
 /* Toggle Icon in the Header */
@@ -546,4 +546,60 @@
 }
 .novel-chapter-table-container:focus-within tr.is-selected td:first-child:last-child {
 	box-shadow: inset 0 0 0 2px var(--novel-focus-ring);
+}
+
+/* ====== Progress summaries (group headers and the property column header) ====== */
+.chapter-group-header-content,
+.novel-column-header-content {
+	display: flex;
+	align-items: center;
+	gap: var(--size-4-1);
+	min-width: 0;
+}
+.novel-column-header-content {
+	flex-wrap: wrap; /* The property column can be narrow */
+}
+.novel-progress {
+	margin-left: auto;
+	display: inline-flex;
+	align-items: center;
+	gap: var(--size-4-2);
+	min-width: 0;
+	font-size: var(--font-ui-smaller);
+	font-weight: var(--font-normal);
+	color: var(--text-muted);
+	white-space: nowrap;
+}
+/* Shrinks before the text does */
+.novel-progress-bar {
+	display: flex;
+	width: 64px;
+	min-width: 24px;
+	flex-shrink: 1;
+	height: 6px;
+	border-radius: 3px;
+	overflow: hidden;
+	background-color: var(--background-modifier-border); /* Unset chapters show as empty track */
+}
+.novel-progress-segment {
+	width: var(--novel-segment);
+	flex-shrink: 0;
+}
+.novel-progress-segment.is-option {
+	background-color: color-mix(
+		in srgb,
+		var(--interactive-accent) calc(var(--novel-segment-opacity, 1) * 100%),
+		transparent
+	);
+}
+.novel-progress-segment.is-unlisted {
+	background-color: var(--text-faint);
+}
+.novel-progress-text {
+	flex-shrink: 0;
+}
+/* Inside the flex header row the gap does the spacing */
+.chapter-group-header-content .group-toggle-icon {
+	display: flex;
+	margin-right: 0;
 }

@@ -3,7 +3,7 @@ import { App, normalizePath, PluginSettingTab, Setting, TextComponent, TFile, TF
 import type NovelChapterPlugin from "../main";
 import { DEFAULT_SETTINGS } from "../settings";
 import { generateId } from "../core/utils";
-import { buildOptions, PropertyTypeSetting } from "../core/property";
+import { buildOptions, OptionProgressText, PropertyTypeSetting } from "../core/property";
 import { ConfirmationModal } from "./ConfirmationModal";
 import { FileSuggest, FolderSuggest } from "./suggest";
 
@@ -371,6 +371,48 @@ export class NovelChapterPluginSettingsTab extends PluginSettingTab {
 					.setValue(settings.looseMatching)
 					.onChange(async (value) => {
 						settings.looseMatching = value;
+						await this.plugin.saveSettings();
+					})
+			);
+
+		// Create settings for the progress summaries on group headers
+		new Setting(containerEl)
+			.setName("Show checkbox progress")
+			.setDesc("Show how many chapters are checked on each group header (checkbox type).")
+			.addToggle((toggle) =>
+				toggle
+					.setValue(settings.checkboxProgress)
+					.onChange(async (value) => {
+						settings.checkboxProgress = value;
+						await this.plugin.saveSettings();
+					})
+			);
+		new Setting(containerEl)
+			.setName("Show option progress")
+			.setDesc("Show a bar of how many chapters have each option on each group header.")
+			.addToggle((toggle) =>
+				toggle
+					.setValue(settings.optionProgress)
+					.onChange(async (value) => {
+						settings.optionProgress = value;
+						await this.plugin.saveSettings();
+						this.renderPropertySettings(containerEl); // Update the text setting's disabled state
+					})
+			);
+		new Setting(containerEl)
+			.setName("Option progress text")
+			.setDesc("What to write next to the option bar. The tooltip always has the full breakdown.")
+			.addDropdown((dropdown) =>
+				dropdown
+					.addOptions({
+						last: "Last option",
+						none: "Bar only",
+						all: "All options",
+					})
+					.setValue(settings.optionProgressText)
+					.setDisabled(!settings.optionProgress)
+					.onChange(async (value) => {
+						settings.optionProgressText = value as OptionProgressText;
 						await this.plugin.saveSettings();
 					})
 			);

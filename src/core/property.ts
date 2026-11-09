@@ -6,6 +6,10 @@ export type PropertyTypeSetting = (typeof PROPERTY_TYPE_SETTINGS)[number];
 
 export type OptionValue = string | number | boolean;
 
+// Text next to the option progress bar: last option's count, none, or every option
+export const OPTION_PROGRESS_TEXTS = ["last", "none", "all"] as const;
+export type OptionProgressText = (typeof OPTION_PROGRESS_TEXTS)[number];
+
 export interface PropertyOption {
 	label: string; // The option exactly as typed (used for display and as the filter key)
 	value: OptionValue; // The value written to frontmatter
@@ -194,4 +198,59 @@ export function describeValue(v: unknown, maxLength = 40): string {
 // Exact, type-sensitive equality of two frontmatter values
 export function sameValue(a: unknown, b: unknown): boolean {
 	return JSON.stringify(a) === JSON.stringify(b);
+}
+
+// Whether a value counts as unset (same rule as checkboxState)
+function isUnset(v: unknown): boolean {
+	return v === undefined || v === null || v === "";
+}
+
+export interface CheckboxSummary {
+	checked: number;
+	unchecked: number; // Unset or false
+	mixed: number; // Other values (the dash state), counted as unchecked in the bar
+	total: number;
+}
+
+// Counts checked/unchecked chapters for the checkbox progress
+export function summarizeCheckbox(values: unknown[], loose: boolean): CheckboxSummary {
+	const summary: CheckboxSummary = { checked: 0, unchecked: 0, mixed: 0, total: values.length };
+	for (const value of values) {
+		const state = checkboxState(value, loose);
+		if (state === true) summary.checked++;
+		else if (state === "mixed") summary.mixed++;
+		else summary.unchecked++;
+	}
+	return summary;
+}
+
+export interface OptionSummary {
+	counts: number[]; // Per option, in the options' order
+	unlisted: number; // Set, but matching no option (typos, old options, lists)
+	none: number; // Unset
+	total: number;
+}
+
+// Counts chapters per option for the option progress (same matching as the row dropdown)
+export function summarizeOptions(
+	values: unknown[],
+	options: PropertyOption[],
+	loose: boolean,
+): OptionSummary {
+	const summary: OptionSummary = {
+		counts: options.map(() => 0),
+		unlisted: 0,
+		none: 0,
+		total: values.length,
+	};
+	for (const value of values) {
+		if (isUnset(value)) {
+			summary.none++;
+			continue;
+		}
+		const [first] = findMatches(value, options, loose);
+		if (first === undefined) summary.unlisted++;
+		else summary.counts[first]++;
+	}
+	return summary;
 }

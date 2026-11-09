@@ -1,5 +1,10 @@
 // Settings data: types, defaults and the repair logic used when loading.
-import { PROPERTY_TYPE_SETTINGS, PropertyTypeSetting } from "./core/property";
+import {
+	OPTION_PROGRESS_TEXTS,
+	OptionProgressText,
+	PROPERTY_TYPE_SETTINGS,
+	PropertyTypeSetting,
+} from "./core/property";
 import { generateId } from "./core/utils";
 import { FRAGMENT_SORTS, FragmentSort } from "./core/chapters";
 
@@ -21,6 +26,9 @@ export interface NovelChapterPluginSettings {
 	propertyOptions: string; // Comma-separated options for the dropdown
 	propertyType: PropertyTypeSetting; // Type the chosen option is saved as ("auto" = from the option's syntax)
 	looseMatching: boolean; // Whether 3 matches "3" and "true" matches true
+	checkboxProgress: boolean; // Checked count on group headers (checkbox type)
+	optionProgress: boolean; // Bar of option counts on group headers (other types)
+	optionProgressText: OptionProgressText; // Text next to the option bar
 	chapterTemplatePath: string; // Path to the chapter template file
 	otherGroupName: string; // Name for the "Other" group
 	excludeOtherFromCount: boolean; // Whether to exclude "Other" from total count
@@ -46,6 +54,9 @@ export const DEFAULT_SETTINGS: NovelChapterPluginSettings = {
 	propertyOptions: "To Do, Done, In Progress", // Default options for the dropdown
 	propertyType: "auto", // Each option's syntax decides its type
 	looseMatching: true, // 3 matches "3" by default
+	checkboxProgress: true,
+	optionProgress: true,
+	optionProgressText: "last",
 	chapterTemplatePath: "", // Default to no template
 	otherGroupName: "Other", // Default name for the "Other" group
 	excludeOtherFromCount: false, // Default to including "Other" in counts
@@ -88,6 +99,15 @@ export function normalizeSettings(
 	}
 	if (typeof settings.looseMatching !== "boolean") {
 		settings.looseMatching = true;
+	}
+	if (typeof settings.checkboxProgress !== "boolean") {
+		settings.checkboxProgress = true;
+	}
+	if (typeof settings.optionProgress !== "boolean") {
+		settings.optionProgress = true;
+	}
+	if (!OPTION_PROGRESS_TEXTS.includes(settings.optionProgressText)) {
+		settings.optionProgressText = "last";
 	}
 	if (typeof settings.followActiveChapter !== "boolean") {
 		settings.followActiveChapter = false;

@@ -45,11 +45,12 @@ export interface NovelChapterPluginSettings {
 	dragToMove: boolean; // Drag chapter rows onto another group to move them (desktop)
 	revealInFileMenu: boolean; // "Reveal in Novel Manager" in Obsidian's file menus
 	keyboardNavigation: boolean; // Arrow keys, Enter, F2, Delete in the chapter table
+	showChapterCount: boolean; // "24 chapters" on the project and group stats lines
 	showWordCounts: boolean; // Word counts in the table (reads chapter files)
 	wordCountGranularity: WordCountGranularity; // Per chapter too, or only groups and total
 	wordCountFormat: WordCountFormat; // "3.9K" or "3,912"
 	wordCountStartMarker: string; // Count only after the first occurrence of this text ("" = all)
-	wordCountUnit: WordCountUnit; // Words, characters, or pages (words / wordsPerPage)
+	wordCountUnits: WordCountUnit[]; // Any of words, characters, pages (words / wordsPerPage), in that order
 	wordsPerPage: number; // Words in a page, for the pages unit
 }
 
@@ -79,11 +80,12 @@ export const DEFAULT_SETTINGS: NovelChapterPluginSettings = {
 	dragToMove: true,
 	revealInFileMenu: true,
 	keyboardNavigation: false,
+	showChapterCount: true,
 	showWordCounts: false,
 	wordCountGranularity: "chapters",
 	wordCountFormat: "short",
 	wordCountStartMarker: "",
-	wordCountUnit: "words",
+	wordCountUnits: ["words"],
 	wordsPerPage: DEFAULT_WORDS_PER_PAGE,
 };
 
@@ -154,8 +156,17 @@ export function normalizeSettings(
 	if (typeof settings.wordCountStartMarker !== "string") {
 		settings.wordCountStartMarker = "";
 	}
-	if (!WORD_COUNT_UNITS.includes(settings.wordCountUnit)) {
-		settings.wordCountUnit = "words";
+	// From the old single unit (wordCountUnit) to a list; keeps only valid units, in display order
+	const legacy = settings as { wordCountUnit?: unknown };
+	if (!Array.isArray(settings.wordCountUnits)) {
+		settings.wordCountUnits = WORD_COUNT_UNITS.includes(legacy.wordCountUnit as WordCountUnit)
+			? [legacy.wordCountUnit as WordCountUnit]
+			: ["words"];
+	}
+	delete legacy.wordCountUnit;
+	settings.wordCountUnits = WORD_COUNT_UNITS.filter((unit) => settings.wordCountUnits.includes(unit));
+	if (typeof settings.showChapterCount !== "boolean") {
+		settings.showChapterCount = true;
 	}
 	if (
 		typeof settings.wordsPerPage !== "number" ||
@@ -182,7 +193,7 @@ export function normalizeSettings(
 	settings.novelProjects = settings.novelProjects.map(
 		(p: Partial<NovelProject>): NovelProject => ({
 			id: p.id || generateId(), // Unique even when several projects are repaired at once
-			name: p.name || "Unnamed Novel",
+			name: p.name || "Unnamed novel",
 			path: p.path || "",
 			fragmentsPath: p.fragmentsPath || "",
 		}),

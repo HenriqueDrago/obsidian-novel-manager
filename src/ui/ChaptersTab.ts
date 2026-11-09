@@ -45,7 +45,13 @@ import type { TabContext } from "./NovelChapterView";
 import { renderPropertyCheckbox, renderPropertyDropdown } from "./PropertyCell";
 import { renderEmptyState } from "./emptyState";
 import { renderCheckboxProgress, renderOptionProgress } from "./ProgressSummary";
-import { countInUnit, formatWordCount, TextCounts, unitLabel } from "../core/wordCount";
+import {
+	countInUnit,
+	formatWordCount,
+	TextCounts,
+	unitLabel,
+	WordCountUnit,
+} from "../core/wordCount";
 
 // Filter values for the checkbox property type
 const FILTER_CHECKED = "__novel-manager-checked__";
@@ -78,7 +84,7 @@ export class ChaptersTab {
 
 	// Word counts: the spans of this render, filled in place once the counts are ready
 	private wordCountRows: { el: HTMLElement; file: TFile }[] = [];
-	private wordCountTotals: { el: HTMLElement; files: TFile[]; withUnit: boolean }[] = [];
+	private wordCountTotals: { el: HTMLElement; files: TFile[]; prefix: string }[] = [];
 	private renderToken = 0; // Counts finishing after a newer render are ignored
 
 	// Keyboard navigation: the selected item, "row:<path>" or "group:<key>"
@@ -373,6 +379,18 @@ export class ChaptersTab {
 			return;
 		}
 		let chapterFiles = getProjectChapters(this.app, this.plugin.settings, currentNovelProject);
+		// Unfiltered chapters per group, for "(1 of 4)" while filtering
+		const unfilteredByGroup = new Map<string, number>();
+		for (const file of chapterFiles) {
+			const key = getChapterGroupKey(file, normalizedChaptersFolderPath);
+			unfilteredByGroup.set(key, (unfilteredByGroup.get(key) ?? 0) + 1);
+		}
+		// Unfiltered total for the header (same rule as the tab count)
+		const unfilteredCount = this.plugin.settings.excludeOtherFromCount
+			? chapterFiles.filter(
+					(file) => getChapterGroupKey(file, normalizedChaptersFolderPath) !== OTHER_GROUP_KEY,
+				).length
+			: chapterFiles.length;
 
 		// First-level subfolders (fragments folder excluded), so empty ones still show as groups
 		const subfolderKeys = getChapterFolderOptions(
@@ -478,15 +496,6 @@ export class ChaptersTab {
 		this.currentGroupKeys = groups.map((g) => g.key);
 		this.updateToggleGroupsButton();
 
-		// Calculate the total count of chapters, excluding "Other" group if configured
-		let totalCount = chapterFiles.length;
-		if (this.plugin.settings.excludeOtherFromCount) {
-			const otherGroup = groups.find((g) => g.key === OTHER_GROUP_KEY);
-			if (otherGroup) {
-				totalCount -= otherGroup.files.length;
-			}
-		}
-
 		// Progress summary of some chapters' property values (read-only), if enabled for this type
 		const { checkboxProgress, optionProgress, optionProgressText } =
 			this.plugin.settings;
@@ -524,30 +533,55 @@ export class ChaptersTab {
 		const totalFiles = this.plugin.settings.excludeOtherFromCount
 			? groups.filter((g) => g.key !== OTHER_GROUP_KEY).flatMap((g) => g.files)
 			: groups.flatMap((g) => g.files);
-		const { showWordCounts, wordCountGranularity } = this.plugin.settings;
-		const chapterTh = headerRow.createEl("th", { text: `Chapter (${totalCount})` });
-		if (showWordCounts) {
-			this.wordCountTotals.push({
-				el: chapterTh.createSpan({ cls: "novel-word-count" }),
-				files: totalFiles,
-				withUnit: true, // "86.2K words" in the column header
-			});
-		}
+		const { wordCountGranularity, showChapterCount } = this.plugin.settings;
+		// Counts need at least one unit selected
+		const showWordCounts =
+			this.plugin.settings.showWordCounts && this.plugin.settings.wordCountUnits.length > 0;
+		// Plain column titles
+		headerRow.createEl("th", { text: "Chapters" });
 		if (showPropertyColumn) {
-			const propertyHeader =
-				propertyColumnHeader.trim() || propertyNameToChange;
-			const propertyTh = headerRow.createEl("th");
-			const propertyThContent = propertyTh.createDiv({ cls: "novel-column-header-content" });
-			propertyThContent.createSpan({ text: propertyHeader });
-			// Whole project, the same chapters as the total count
-			renderProgress(propertyThContent, totalFiles);
+			headerRow.createEl("th", { text: propertyColumnHeader.trim() || propertyNameToChange });
 		}
 
-		// Group headers stick right below the column header, so track its height
-		// (an observer, since it's 0 while the tab is hidden and changes with zoom)
+		// Stats line under a header: "24 chapters · 86.2K words", progress on the right.
+		// "3 of 24 chapters" while a search or filter hides some.
+		const renderStats = (parentEl: HTMLElement, files: TFile[], unfiltered: number) => {
+			const showCounts = showWordCounts && files.length > 0;
+			const showBar = showProgress && files.length > 0;
+			if (!showChapterCount && !showCounts && !showBar) return; // Nothing to show: no empty line
+			const lineEl = parentEl.createDiv({ cls: "novel-stats-line" });
+			if (showChapterCount) {
+				const word = (n: number) => (n === 1 ? "chapter" : "chapters");
+				lineEl.createSpan({
+					cls: "novel-stats-count",
+					text: isFiltering
+						? `${files.length} of ${unfiltered} ${word(unfiltered)}`
+						: `${files.length} ${word(files.length)}`,
+				});
+			}
+			if (showCounts) {
+				this.wordCountTotals.push({
+					el: lineEl.createSpan({ cls: "novel-word-count" }),
+					files,
+					prefix: showChapterCount ? "· " : "", // Separates the counts from the chapter count
+				});
+			}
+			renderProgress(lineEl, files);
+		};
+
+		// Project stats: a second header row spanning both columns, sticky with the titles
+		const statsRow = thead.createEl("tr", { cls: "novel-summary-row" });
+		const statsCell = statsRow.createEl("th");
+		statsCell.colSpan = numColumns;
+		renderStats(statsCell, totalFiles, unfilteredCount); // Same chapters as the totals
+		if (!statsCell.hasChildNodes()) statsRow.remove(); // Everything turned off: no empty row
+
+		// The stats row sticks under the titles, and group headers under both, so track the heights
+		// (an observer, since they're 0 while the tab is hidden and change with zoom)
 		this.theadObserver = new ResizeObserver(() => {
 			this.tableContainer.setCssProps({
 				"--novel-thead-height": `${thead.offsetHeight}px`,
+				"--novel-header-row-height": `${headerRow.offsetHeight}px`,
 			});
 		});
 		this.theadObserver.observe(thead);
@@ -587,25 +621,26 @@ export class ChaptersTab {
 			const groupHeaderCell = groupHeaderRow.createEl("td");
 			groupHeaderCell.colSpan = numColumns;
 
-			// One flex row (a td can't be flex): toggle icon, name and count, progress on the right
+			// Two lines (a td can't be flex): toggle icon and name, then the group's stats
 			const groupHeaderContent = groupHeaderCell.createDiv({
 				cls: "chapter-group-header-content",
 			});
-			const iconEl = groupHeaderContent.createSpan({
+			const titleEl = groupHeaderContent.createDiv({ cls: "chapter-group-title" });
+			const iconEl = titleEl.createSpan({
 				cls: "group-toggle-icon",
 			});
 			setIcon(iconEl, startCollapsed ? "chevron-right" : "chevron-down");
-			groupHeaderContent.createSpan({
-				text: `${group.name} (${group.files.length})`,
+			// The name gets cut with "…" when space runs out
+			titleEl.createSpan({
+				cls: "chapter-group-name",
+				text: group.name,
+				attr: { "aria-label": group.name },
 			});
-			if (showWordCounts && group.files.length > 0) {
-				this.wordCountTotals.push({
-					el: groupHeaderContent.createSpan({ cls: "novel-word-count" }),
-					files: group.files,
-					withUnit: false,
-				});
-			}
-			renderProgress(groupHeaderContent, group.files);
+			renderStats(
+				groupHeaderContent,
+				group.files,
+				unfilteredByGroup.get(group.key) ?? group.files.length,
+			);
 
 			// Clicking the header collapses or expands the group
 			groupHeaderRow.addEventListener("click", () => this.toggleGroup(group.key));
@@ -758,31 +793,39 @@ export class ChaptersTab {
 
 	// Writes the word counts from the cache; "…" for anything never counted
 	private fillWordCounts(): void {
-		const { wordCountFormat, wordCountUnit, wordsPerPage } = this.plugin.settings;
+		const { wordCountFormat, wordCountUnits: units, wordsPerPage } = this.plugin.settings;
 		const cache = this.plugin.wordCounts;
-		const show = (el: HTMLElement, counts: TextCounts | undefined, prefix: string, withUnit: boolean) => {
-			if (!counts) {
-				el.setText(`${prefix}…`);
-				el.setAttr("aria-label", "Counting…");
-				return;
-			}
-			const value = countInUnit(counts, wordCountUnit, wordsPerPage);
-			const unit = withUnit ? ` ${unitLabel(value, wordCountUnit)}` : "";
-			el.setText(`${prefix}${formatWordCount(value, wordCountFormat, wordCountUnit)}${unit}`);
-			// Exact numbers on hover; pages also show the words they come from
-			const exact = `${value.toLocaleString(undefined, { maximumFractionDigits: 1 })} ${unitLabel(value, wordCountUnit)}`;
-			el.setAttr(
-				"aria-label",
-				wordCountUnit === "pages"
-					? `${exact} · ${counts.words.toLocaleString()} ${unitLabel(counts.words, "words")}`
-					: exact,
-			);
+		const valueIn = (counts: TextCounts, unit: WordCountUnit) => countInUnit(counts, unit, wordsPerPage);
+		// Exact numbers on hover, every selected unit (pages also show the words they come from)
+		const tooltipFor = (counts: TextCounts) => {
+			const tooltipUnits: WordCountUnit[] =
+				units.includes("pages") && !units.includes("words") ? ["words", ...units] : units;
+			return tooltipUnits
+				.map((unit) => {
+					const value = valueIn(counts, unit);
+					return `${value.toLocaleString(undefined, { maximumFractionDigits: 1 })} ${unitLabel(value, unit)}`;
+				})
+				.join(" · ");
 		};
-		// The last known count stays up while a changed chapter is recounted
+		const setCounting = (el: HTMLElement, prefix: string) => {
+			el.setText(`${prefix}…`);
+			el.setAttr("aria-label", "Counting…");
+		};
+
+		// Rows: just the number of the first selected unit (rows are narrow); the last known count
+		// stays up while a changed chapter is recounted
 		for (const { el, file } of this.wordCountRows) {
-			show(el, cache.getLatest(file), "", false);
+			const counts = cache.getLatest(file);
+			if (!counts) {
+				setCounting(el, "");
+				continue;
+			}
+			el.setText(formatWordCount(valueIn(counts, units[0]), wordCountFormat, units[0]));
+			el.setAttr("aria-label", tooltipFor(counts));
 		}
-		for (const { el, files, withUnit } of this.wordCountTotals) {
+
+		// Headers: every selected unit, "86.2K words / 412K characters"
+		for (const { el, files, prefix } of this.wordCountTotals) {
 			// Sums words and characters, so pages are counted from the total (no rounding drift)
 			const sum: TextCounts = { words: 0, characters: 0 };
 			let complete = true;
@@ -795,7 +838,16 @@ export class ChaptersTab {
 				sum.words += counts.words;
 				sum.characters += counts.characters;
 			}
-			show(el, complete ? sum : undefined, "· ", withUnit);
+			if (!complete) {
+				setCounting(el, prefix);
+				continue;
+			}
+			const parts = units.map((unit) => {
+				const value = valueIn(sum, unit);
+				return `${formatWordCount(value, wordCountFormat, unit)} ${unitLabel(value, unit)}`;
+			});
+			el.setText(`${prefix}${parts.join(" / ")}`);
+			el.setAttr("aria-label", tooltipFor(sum));
 		}
 	}
 
@@ -878,13 +930,13 @@ export class ChaptersTab {
 		const register = (
 			modifiers: Modifier[],
 			key: string,
-			handler: (item: HTMLElement | null, control: HTMLElement | null) => void,
+			handler: (item: HTMLElement | null, control: HTMLElement | null) => boolean,
 		) => {
 			this.context.scope.register(modifiers, key, (evt) => {
 				const target = this.getKeyTarget(evt);
 				if (!target) return true; // Not ours
-				handler(target.item, target.control);
-				return false; // Handled: no default action, no other hotkeys
+				// Handled: no default action, no other hotkeys. Otherwise let it through.
+				return !handler(target.item, target.control);
 			});
 		};
 		// Parses an item into its chapter file or group key
@@ -898,6 +950,7 @@ export class ChaptersTab {
 			return { file: null, groupKey: null };
 		};
 
+		// Each handler returns whether it acted; a key that does nothing goes on to Obsidian
 		// Arrows always move between rows, even from the dropdown (which would change the value)
 		register([], "ArrowDown", (item) => this.moveSelection(item, 1));
 		register([], "ArrowUp", (item) => this.moveSelection(item, -1));
@@ -907,65 +960,86 @@ export class ChaptersTab {
 		register([], "Enter", (item, control) => {
 			if (control) {
 				this.activatePropertyControl(control); // Open the dropdown, or toggle the checkbox
-				return;
+				return true;
 			}
 			const { file, groupKey } = parse(item);
-			if (file) this.app.workspace.openLinkText(file.path, "", false).catch(console.error);
-			else if (groupKey !== null) this.toggleGroup(groupKey);
+			if (file) {
+				this.app.workspace.openLinkText(file.path, "", false).catch(console.error);
+				return true;
+			}
+			if (groupKey !== null) {
+				this.toggleGroup(groupKey);
+				return true;
+			}
+			return false;
 		});
 		register(["Mod"], "Enter", (item) => {
 			const { file } = parse(item);
-			if (file) this.app.workspace.openLinkText(file.path, "", "tab").catch(console.error);
+			if (!file) return false;
+			this.app.workspace.openLinkText(file.path, "", "tab").catch(console.error);
+			return true;
 		});
 
 		register([], "ArrowRight", (item, control) => {
-			if (control) return; // Already in the last cell; also keeps the dropdown's value
+			if (control) return true; // Already in the last cell; swallowed so the dropdown keeps its value
 			const { file, groupKey } = parse(item);
 			if (file) {
 				// Into the property cell
-				item?.querySelector<HTMLElement>(PROPERTY_CONTROL)?.focus();
-				return;
+				const propertyControl = item?.querySelector<HTMLElement>(PROPERTY_CONTROL);
+				propertyControl?.focus();
+				return !!propertyControl;
 			}
-			if (groupKey === null) return;
+			if (groupKey === null) return false;
 			if (this.collapsedGroups.has(groupKey)) {
 				this.toggleGroup(groupKey);
-			} else {
-				const firstRow = this.rowsByGroupKey.get(groupKey)?.[0];
-				if (firstRow) this.selectItem(firstRow, true);
+				return true;
 			}
+			const firstRow = this.rowsByGroupKey.get(groupKey)?.[0];
+			if (firstRow) this.selectItem(firstRow, true);
+			return !!firstRow;
 		});
 		register([], "ArrowLeft", (item, control) => {
 			if (control) {
 				if (item) this.selectItem(item, true); // Back to the row
-				return;
+				return !!item;
 			}
 			const { file, groupKey } = parse(item);
 			if (file) {
 				const header = this.groupHeaderByKey.get(this.groupKeyByPath.get(file.path) ?? "");
 				if (header) this.selectItem(header, true);
-			} else if (groupKey !== null && !this.collapsedGroups.has(groupKey)) {
-				this.toggleGroup(groupKey);
+				return !!header;
 			}
+			if (groupKey !== null && !this.collapsedGroups.has(groupKey)) {
+				this.toggleGroup(groupKey);
+				return true;
+			}
+			return false;
 		});
 
 		register([], "F2", (item) => {
 			const { file, groupKey } = parse(item);
 			if (file) {
 				promptAndRenameChapter(this.app, file).catch(console.error);
-			} else if (groupKey !== null) {
-				const project = this.plugin.settings.novelProjects.find(
-					(p) => p.id === this.selectedNovelProjectId,
-				);
-				const folder = project ? this.getGroupFolder(groupKey, project) : null;
-				if (folder) this.renameGroupFolder(folder);
+				return true;
 			}
+			if (groupKey === null) return false;
+			const project = this.plugin.settings.novelProjects.find(
+				(p) => p.id === this.selectedNovelProjectId,
+			);
+			const folder = project ? this.getGroupFolder(groupKey, project) : null;
+			if (folder) this.renameGroupFolder(folder);
+			return !!folder; // "Other" can't be renamed here
 		});
 		register([], "Delete", (item) => {
 			const { file } = parse(item);
-			if (file) promptAndDeleteChapter(this.app, file).catch(console.error);
+			if (!file) return false;
+			promptAndDeleteChapter(this.app, file).catch(console.error);
+			return true;
 		});
 		register([], "Escape", (item, control) => {
-			if (control && item) this.selectItem(item, true); // Leave the property cell
+			if (!control || !item) return false;
+			this.selectItem(item, true); // Leave the property cell
+			return true;
 		});
 
 		// Space acts on the row's property (no global hotkey uses it, so a listener is enough)
@@ -1035,9 +1109,10 @@ export class ChaptersTab {
 	}
 
 	// Moves the selection by a step, or to the first or last item
-	private moveSelection(from: HTMLElement | null, step: number | "first" | "last"): void {
+	// Returns whether there was anything to select
+	private moveSelection(from: HTMLElement | null, step: number | "first" | "last"): boolean {
 		const items = this.getNavItems();
-		if (items.length === 0) return;
+		if (items.length === 0) return false;
 		let target: HTMLElement | undefined;
 		if (step === "first") target = items[0];
 		else if (step === "last") target = items[items.length - 1];
@@ -1047,6 +1122,7 @@ export class ChaptersTab {
 			target = items[Math.max(0, Math.min(items.length - 1, index))];
 		}
 		if (target) this.selectItem(target, true);
+		return !!target;
 	}
 
 	// After a redraw: the same item, or the one now at its position (after a delete or move)

@@ -31,7 +31,7 @@ export default class NovelChapterPlugin extends Plugin {
 		// Add a command to open the Novel Chapter view
 		this.addCommand({
 			id: "open-novel-chapter-view",
-			name: "Open manager view",
+			name: "Open view",
 			callback: () => this.activateView().catch(console.error),
 		});
 
@@ -160,7 +160,7 @@ export default class NovelChapterPlugin extends Plugin {
 		);
 
 		// Add a ribbon icon to open the Novel Chapter view
-		this.addRibbonIcon("list-ordered", "Open novel chapter view", () =>
+		this.addRibbonIcon("list-ordered", "Open Novel Manager", () =>
 			this.activateView().catch(console.error),
 		);
 

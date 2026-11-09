@@ -1,13 +1,9 @@
 // The plugin's settings screen.
 import {
 	App,
-	DropdownComponent,
-	normalizePath,
 	PluginSettingTab,
 	Setting,
 	TextComponent,
-	TFile,
-	TFolder,
 } from "obsidian";
 import type NovelChapterPlugin from "../main";
 import { DEFAULT_SETTINGS } from "../settings";
@@ -20,6 +16,7 @@ import {
 	WordCountUnit,
 } from "../core/wordCount";
 import { ConfirmationModal } from "./ConfirmationModal";
+import { addPathNote, fragmentsPlaceholder, setSettingEnabled } from "./settingHelpers";
 import { FileSuggest, FolderSuggest } from "./suggest";
 
 // Builds a setting description with one line per entry
@@ -54,11 +51,11 @@ export class NovelChapterPluginSettingsTab extends PluginSettingTab {
 
 		// Create setting for specifying the chapter template file path
 		const templateSetting = new Setting(containerEl)
-			.setName("Chapter template file path")
+			.setName("Chapter template")
 			.setDesc(
-				'Path to a markdown file to use as a template for new chapters (e.g., "Templates/ChapterTemplate.md"). Leave empty to not use a template. Placeholders like {{title}} and {{date}} can be used in the template.'
+				"Note used for new chapters; {{title}} and {{date}} are filled in. Leave empty for blank chapters."
 			);
-		const updateTemplateNote = this.addPathNote(templateSetting.descEl, "file", "File");
+		const updateTemplateNote = addPathNote(this.app, templateSetting.descEl, "file", "File");
 		templateSetting.addText((text) => {
 			text
 				.setPlaceholder(
@@ -77,9 +74,9 @@ export class NovelChapterPluginSettingsTab extends PluginSettingTab {
 
 		// Create setting for naming the "Other" group
 		new Setting(containerEl)
-			.setName('Name for "other" group')
+			.setName("Label for chapters outside subfolders")
 			.setDesc(
-				"Set a custom name for the group containing chapters not in a subfolder."
+				"Group name for chapters directly in the project folder. Shown last in the list."
 			)
 			.addText((text) =>
 				text
@@ -93,9 +90,9 @@ export class NovelChapterPluginSettingsTab extends PluginSettingTab {
 
 		// Create setting for excluding the "Other" group from total chapter count
 		new Setting(containerEl)
-			.setName('Exclude "other" group from total count')
+			.setName("Leave this group out of totals")
 			.setDesc(
-				"If enabled, chapters in this group will not be included in the total chapter count at the top of the view."
+				"Chapters directly in the project folder don't count toward the totals at the top of the list: chapter count, word count and progress. Their own group still shows its numbers."
 			)
 			.addToggle((toggle) =>
 				toggle
@@ -122,11 +119,24 @@ export class NovelChapterPluginSettingsTab extends PluginSettingTab {
 					})
 			);
 
+		// Create setting for the chapter counts on the stats lines
+		new Setting(containerEl)
+			.setName("Show chapter counts")
+			.setDesc("How many chapters the project and each group have, on the line under their headers.")
+			.addToggle((toggle) =>
+				toggle
+					.setValue(this.plugin.settings.showChapterCount)
+					.onChange(async (value) => {
+						this.plugin.settings.showChapterCount = value;
+						await this.plugin.saveSettings();
+					})
+			);
+
 		// Create setting for keyboard navigation in the chapter table
 		new Setting(containerEl)
 			.setName("Keyboard navigation")
 			.setDesc(
-				"Move through the chapter list with the arrow keys. Enter opens a chapter, space changes its property, F2 renames, the delete key deletes, and left and right collapse or expand groups or step into the property cell."
+				"Arrow keys move through the list; Enter opens, space changes the property, F2 renames, delete deletes."
 			)
 			.addToggle((toggle) =>
 				toggle
@@ -154,9 +164,9 @@ export class NovelChapterPluginSettingsTab extends PluginSettingTab {
 
 		// Create setting for the reveal option in Obsidian's file menus
 		new Setting(containerEl)
-			.setName("Reveal option in file menus")
+			.setName("Reveal in file menus")
 			.setDesc(
-				"Add a reveal option to a chapter's menu in the file explorer and tab header."
+				"Adds a reveal option to a chapter's menu in the file explorer and tab header."
 			)
 			.addToggle((toggle) =>
 				toggle
@@ -171,16 +181,20 @@ export class NovelChapterPluginSettingsTab extends PluginSettingTab {
 		new Setting(containerEl).setName("Word counts").setHeading();
 
 		// Create settings for word counts (the rest only matter while they're on)
-		const wordCountControls: (DropdownComponent | TextComponent)[] = [];
-		let wordsPerPageInput: TextComponent | null = null; // Only matters for the pages unit
+		const wordCountSettings: Setting[] = [];
+		let wordsPerPageSetting: Setting | null = null; // Only matters for the pages unit
 		const updateWordCountControls = () => {
-			const { showWordCounts, wordCountUnit } = this.plugin.settings;
-			for (const control of wordCountControls) control.setDisabled(!showWordCounts);
-			wordsPerPageInput?.setDisabled(!showWordCounts || wordCountUnit !== "pages");
+			const { showWordCounts, wordCountUnits } = this.plugin.settings;
+			for (const setting of wordCountSettings) setSettingEnabled(setting, showWordCounts);
+			if (wordsPerPageSetting) {
+				setSettingEnabled(wordsPerPageSetting, showWordCounts && wordCountUnits.includes("pages"));
+			}
 		};
 		new Setting(containerEl)
-			.setName("Show word counts")
-			.setDesc("Count the words, characters or pages of each chapter. Reads chapter files, so it's off by default.")
+			.setName("Show counts")
+			.setDesc(
+				"Words, characters and pages per chapter, group and project. Headers show every unit turned on below; chapter rows show the first one. Reads chapter files."
+			)
 			.addToggle((toggle) =>
 				toggle
 					.setValue(this.plugin.settings.showWordCounts)
@@ -190,29 +204,37 @@ export class NovelChapterPluginSettingsTab extends PluginSettingTab {
 						await this.plugin.saveSettings();
 					})
 			);
-		new Setting(containerEl)
-			.setName("Count")
-			.setDesc("What to count. Characters leave out markdown and count spaces between words.")
-			.addDropdown((dropdown) => {
-				wordCountControls.push(dropdown);
-				dropdown
-					.addOptions({
-						words: "Words",
-						characters: "Characters",
-						pages: "Pages",
-					})
-					.setValue(this.plugin.settings.wordCountUnit)
-					.onChange(async (value) => {
-						this.plugin.settings.wordCountUnit = value as WordCountUnit;
-						updateWordCountControls();
-						await this.plugin.saveSettings();
-					});
-			});
-		new Setting(containerEl)
+		// One toggle per unit: any combination can be shown
+		const unitToggles: { unit: WordCountUnit; name: string; desc: string }[] = [
+			{ unit: "words", name: "Words", desc: "" },
+			{ unit: "characters", name: "Characters", desc: "Leaves out markdown; spaces between words count." },
+			{ unit: "pages", name: "Pages", desc: "Words divided by the words per page below." },
+		];
+		for (const { unit, name, desc } of unitToggles) {
+			const unitSetting = new Setting(containerEl)
+				.setName(name)
+				.setDesc(desc)
+				.addToggle((toggle) =>
+					toggle
+						.setValue(this.plugin.settings.wordCountUnits.includes(unit))
+						.onChange(async (value) => {
+							const selected = new Set(this.plugin.settings.wordCountUnits);
+							if (value) selected.add(unit);
+							else selected.delete(unit);
+							// Kept in display order: words, characters, pages
+							this.plugin.settings.wordCountUnits = unitToggles
+								.map((entry) => entry.unit)
+								.filter((u) => selected.has(u));
+							updateWordCountControls();
+							await this.plugin.saveSettings();
+						})
+				);
+			wordCountSettings.push(unitSetting);
+		}
+		wordsPerPageSetting = new Setting(containerEl)
 			.setName("Words per page")
 			.setDesc("How many words make a page, for counting pages.")
 			.addText((text) => {
-				wordsPerPageInput = text;
 				text.inputEl.type = "number";
 				text.inputEl.min = "1";
 				text
@@ -226,11 +248,10 @@ export class NovelChapterPluginSettingsTab extends PluginSettingTab {
 						this.plugin.saveSettingsDebounced();
 					});
 			});
-		new Setting(containerEl)
-			.setName("Word count detail")
-			.setDesc("Where word counts show. Group and project totals always show.")
+		const detailSetting = new Setting(containerEl)
+			.setName("Detail")
+			.setDesc("Show counts on every chapter, or only on groups and the total.")
 			.addDropdown((dropdown) => {
-				wordCountControls.push(dropdown);
 				dropdown
 					.addOptions({
 						chapters: "Chapters, groups and total",
@@ -242,11 +263,11 @@ export class NovelChapterPluginSettingsTab extends PluginSettingTab {
 						await this.plugin.saveSettings();
 					});
 			});
-		new Setting(containerEl)
-			.setName("Word count format")
+		wordCountSettings.push(detailSetting);
+		const formatSetting = new Setting(containerEl)
+			.setName("Format")
 			.setDesc("Short numbers are rounded; hover one for the exact count. Pages always show one decimal.")
 			.addDropdown((dropdown) => {
-				wordCountControls.push(dropdown);
 				dropdown
 					.addOptions({
 						short: "Short (3.9K)",
@@ -258,13 +279,13 @@ export class NovelChapterPluginSettingsTab extends PluginSettingTab {
 						await this.plugin.saveSettings();
 					});
 			});
-		new Setting(containerEl)
+		wordCountSettings.push(formatSetting);
+		const markerSetting = new Setting(containerEl)
 			.setName("Start counting after")
 			.setDesc(
 				"Only count the words after the first occurrence of this text in a chapter (e.g., a heading or a line like %%start%%). Chapters without it are counted whole. Leave empty to count everything."
 			)
 			.addText((text) => {
-				wordCountControls.push(text);
 				text
 					.setPlaceholder("E.g., %%start%%")
 					.setValue(this.plugin.settings.wordCountStartMarker)
@@ -275,6 +296,7 @@ export class NovelChapterPluginSettingsTab extends PluginSettingTab {
 					});
 			});
 
+		wordCountSettings.push(markerSetting);
 		updateWordCountControls(); // Initial disabled state
 
 		// ====== Property column ======
@@ -282,9 +304,9 @@ export class NovelChapterPluginSettingsTab extends PluginSettingTab {
 
 		// Create setting for showing the frontmatter property column and settings
 		new Setting(containerEl)
-			.setName('Show target property column')
+			.setName("Show property column")
 			.setDesc(
-				"If enabled, shows an extra column with a target property you can change."
+				"A column to view and change a frontmatter property of each chapter."
 			)
 			.addToggle((toggle) =>
 				toggle
@@ -307,14 +329,15 @@ export class NovelChapterPluginSettingsTab extends PluginSettingTab {
 		// Create setting for enabling fragments in the plugin
 		new Setting(containerEl)
 			.setName("Enable fragments")
-			.setDesc("Enable a separate section for managing scene fragments and random ideas.")
+			.setDesc("A tab for quick idea notes, saved in each project's fragments folder.")
 			.addToggle((toggle) =>
 				toggle
 					.setValue(this.plugin.settings.enableFragments)
 					.onChange(async (value) => {
 						this.plugin.settings.enableFragments = value;
 						await this.plugin.saveSettings();
-						this.display(); // Re-render to show/hide each project's fragments folder
+						// Only the projects (their fragments folder field), so the page keeps its scroll position
+						this.renderNovelProjects(novelProjectsContainer);
 					})
 			);
 
@@ -338,7 +361,7 @@ export class NovelChapterPluginSettingsTab extends PluginSettingTab {
 						// Add a new novel project with a unique ID and default name
 						this.plugin.settings.novelProjects.push({
 							id: generateId(),
-							name: `New Novel ${
+							name: `New novel ${
 								this.plugin.settings.novelProjects.length + 1
 							}`,
 							path: "",
@@ -350,49 +373,19 @@ export class NovelChapterPluginSettingsTab extends PluginSettingTab {
 			);
 	}
 
-	// Adds a note line to an element; returns a function that updates it for a path value
-	private addPathNote(
-		parentEl: HTMLElement,
-		kind: "folder" | "file",
-		label: string,
-	): (value: string) => void {
-		// Missing folders are created when needed (neutral note); a missing template is a real problem
-		const noteEl = parentEl.createDiv({
-			cls: kind === "file" ? "mod-warning" : "novel-path-note",
-		});
-		return (value: string) => {
-			const trimmed = value.trim();
-			const found = trimmed
-				? this.app.vault.getAbstractFileByPath(normalizePath(trimmed))
-				: null;
-			const missing =
-				trimmed !== "" &&
-				!(kind === "file" ? found instanceof TFile : found instanceof TFolder);
-			noteEl.setText(
-				!missing
-					? ""
-					: kind === "file"
-						? `${label} not found.`
-						: `${label} doesn't exist yet; it will be created when needed.`,
-			);
-			noteEl.toggle(missing);
-		};
-	}
-
 	private renderPropertySettings(containerEl: HTMLElement): void {
 		containerEl.empty(); // Clear existing content
 
-		// Only show the property settings when the property column is enabled
-		if (!this.plugin.settings.showProperty) return;
-
+		// Always shown; greyed out while the property column is off
 		const settings = this.plugin.settings;
 		const isCheckbox = settings.propertyType === "checkbox";
+		const columnOn = settings.showProperty;
 
 		// Create setting for selecting the frontmatter property to change
-		new Setting(containerEl)
-			.setName("Target property name")
+		const propertySetting = new Setting(containerEl)
+			.setName("Property")
 			.setDesc(
-				'The actual frontmatter key to update (e.g., "status", "outlinelevel"). This is case-sensitive.'
+				"Frontmatter key to show and change (case-sensitive), e.g., status."
 			)
 			.addText((text) =>
 				text
@@ -405,10 +398,10 @@ export class NovelChapterPluginSettingsTab extends PluginSettingTab {
 			);
 
 		// Create setting for customizing the property column header display name
-		new Setting(containerEl)
-			.setName("Property column header display name")
+		const titleSetting = new Setting(containerEl)
+			.setName("Column title")
 			.setDesc(
-				'What title to display for the property column in the view (e.g., "current status"). If empty, it will use the "target property name".'
+				"Shown above the column. Leave empty to use the property name."
 			)
 			.addText((text) =>
 				text
@@ -470,14 +463,13 @@ export class NovelChapterPluginSettingsTab extends PluginSettingTab {
 		if (isCheckbox) {
 			optionsDescription.push("Ignored while property type is checkbox.");
 		}
-		new Setting(containerEl)
-			.setName("Property options")
+		const optionsSetting = new Setting(containerEl)
+			.setName("Options")
 			.setDesc(descriptionLines(optionsDescription))
 			.addText((text) =>
 				text
 					.setPlaceholder(DEFAULT_SETTINGS.propertyOptions)
 					.setValue(settings.propertyOptions)
-					.setDisabled(isCheckbox) // Kept, but unused, while the type is checkbox
 					.onChange((value) => {
 						settings.propertyOptions = value;
 						updateWarning(); // Only the warning, so the input keeps focus
@@ -486,7 +478,7 @@ export class NovelChapterPluginSettingsTab extends PluginSettingTab {
 			);
 
 		// Create setting for loose matching
-		new Setting(containerEl)
+		const looseSetting = new Setting(containerEl)
 			.setName("Loose matching")
 			.setDesc(
 				descriptionLines([
@@ -505,7 +497,7 @@ export class NovelChapterPluginSettingsTab extends PluginSettingTab {
 
 		// Progress summaries on group headers (only with the property column)
 		new Setting(containerEl).setName("Progress").setHeading();
-		new Setting(containerEl)
+		const checkboxProgressSetting = new Setting(containerEl)
 			.setName("Show checkbox progress")
 			.setDesc("Show how many chapters are checked on each group header (checkbox type).")
 			.addToggle((toggle) =>
@@ -516,7 +508,7 @@ export class NovelChapterPluginSettingsTab extends PluginSettingTab {
 						await this.plugin.saveSettings();
 					})
 			);
-		new Setting(containerEl)
+		const optionProgressSetting = new Setting(containerEl)
 			.setName("Show option progress")
 			.setDesc("Show a bar of how many chapters have each option on each group header.")
 			.addToggle((toggle) =>
@@ -528,9 +520,9 @@ export class NovelChapterPluginSettingsTab extends PluginSettingTab {
 						this.renderPropertySettings(containerEl); // Update the text setting's disabled state
 					})
 			);
-		new Setting(containerEl)
-			.setName("Option progress text")
-			.setDesc("What to write next to the option bar. The tooltip always has the full breakdown.")
+		const progressTextSetting = new Setting(containerEl)
+			.setName("Progress text")
+			.setDesc("What to write next to the option bar; the tooltip always has the full breakdown.")
 			.addDropdown((dropdown) =>
 				dropdown
 					.addOptions({
@@ -539,12 +531,25 @@ export class NovelChapterPluginSettingsTab extends PluginSettingTab {
 						all: "All options",
 					})
 					.setValue(settings.optionProgressText)
-					.setDisabled(!settings.optionProgress)
 					.onChange(async (value) => {
 						settings.optionProgressText = value as OptionProgressText;
 						await this.plugin.saveSettings();
 					})
 			);
+
+		// Grey out what can't apply right now
+		for (const setting of [
+			propertySetting,
+			titleSetting,
+			typeSetting,
+			looseSetting,
+			checkboxProgressSetting,
+			optionProgressSetting,
+		]) {
+			setSettingEnabled(setting, columnOn);
+		}
+		setSettingEnabled(optionsSetting, columnOn && !isCheckbox); // Kept, but unused, for checkboxes
+		setSettingEnabled(progressTextSetting, columnOn && settings.optionProgress);
 	}
 
 
@@ -580,15 +585,21 @@ export class NovelChapterPluginSettingsTab extends PluginSettingTab {
 			const updateConfigText = () =>
 				configEl.setText(`Configuration for ${project.name || "this novel"}.`);
 			updateConfigText();
-			const updatePathNote = this.addPathNote(projectSetting.descEl, "folder", "Chapters folder");
-			const updateFragmentsNote = this.addPathNote(projectSetting.descEl, "folder", "Fragments folder");
+			const updatePathNote = addPathNote(this.app, projectSetting.descEl, "folder", "Chapters folder");
+			const updateFragmentsNote = addPathNote(this.app, projectSetting.descEl, "folder", "Fragments folder");
 
-			// Vertical stack of inputs in the control area
+			// Vertical stack of labeled inputs in the control area
 			const inputStack = projectSetting.controlEl.createDiv({ cls: "novel-project-input-stack" });
+			// A label above each input; the label wraps the input, so clicking it focuses the field
+			const addField = (label: string): HTMLElement => {
+				const fieldEl = inputStack.createEl("label", { cls: "novel-project-field" });
+				fieldEl.createSpan({ cls: "novel-project-field-label", text: label });
+				return fieldEl;
+			};
 
 			// Novel name
-			new TextComponent(inputStack)
-				.setPlaceholder("Novel name (e.g., my epic saga)")
+			new TextComponent(addField("Name"))
+				.setPlaceholder("E.g., my epic saga")
 				.setValue(project.name)
 				.onChange((value) => {
 					project.name = value.trim();
@@ -597,36 +608,37 @@ export class NovelChapterPluginSettingsTab extends PluginSettingTab {
 				});
 
 			// Chapters folder
-			let fragmentsText: TextComponent | null = null; // Set below when fragments are enabled
-			const pathText = new TextComponent(inputStack)
-				.setPlaceholder("Folder path (e.g., novels/my-epic-saga/chapters)")
+			let fragmentsText: TextComponent | null = null; // Created below
+			const pathText = new TextComponent(addField("Chapters folder"))
+				.setPlaceholder("E.g., novels/my-epic-saga/chapters")
 				.setValue(project.path)
 				.onChange((value) => {
 					project.path = value.trim();
 					updatePathNote(value);
 					// The fragments placeholder shows the fallback, which follows this path
-					fragmentsText?.setPlaceholder(this.fragmentsPlaceholder(project.path));
+					fragmentsText?.setPlaceholder(fragmentsPlaceholder(project.path));
 					this.plugin.saveSettingsDebounced(); // Debounced: saves and refreshes views once typing pauses
 				});
 			new FolderSuggest(this.app, pathText.inputEl);
 			updatePathNote(project.path);
 
-			// Fragments folder (only when fragments are enabled)
-			if (this.plugin.settings.enableFragments) {
-				fragmentsText = new TextComponent(inputStack)
-					.setPlaceholder(this.fragmentsPlaceholder(project.path))
-					// If empty, the plugin really uses the placeholder path (<chapters path>/Fragments)
-					.setValue(project.fragmentsPath || "")
-					.onChange((value) => {
-						project.fragmentsPath = value.trim();
-						updateFragmentsNote(value);
-						this.plugin.saveSettingsDebounced(); // Debounced: saves and refreshes views once typing pauses
-					});
-				new FolderSuggest(this.app, fragmentsText.inputEl);
-				updateFragmentsNote(project.fragmentsPath || "");
-			} else {
-				updateFragmentsNote(""); // Hidden while fragments are off
-			}
+			// Fragments folder: always shown, greyed out while fragments are off
+			const fragmentsOn = this.plugin.settings.enableFragments;
+			const fragmentsField = addField(fragmentsOn ? "Fragments folder" : "Fragments folder (fragments are off)");
+			fragmentsField.toggleClass("is-disabled", !fragmentsOn);
+			fragmentsText = new TextComponent(fragmentsField)
+				.setPlaceholder(fragmentsPlaceholder(project.path))
+				// If empty, the plugin really uses the placeholder path (<chapters path>/Fragments)
+				.setValue(project.fragmentsPath || "")
+				.setDisabled(!fragmentsOn)
+				.onChange((value) => {
+					project.fragmentsPath = value.trim();
+					updateFragmentsNote(value);
+					this.plugin.saveSettingsDebounced(); // Debounced: saves and refreshes views once typing pauses
+				});
+			new FolderSuggest(this.app, fragmentsText.inputEl);
+			// The missing-folder note only matters while fragments are on
+			updateFragmentsNote(fragmentsOn ? project.fragmentsPath || "" : "");
 
 			// Reorder and remove buttons
 			projectSetting
@@ -652,7 +664,7 @@ export class NovelChapterPluginSettingsTab extends PluginSettingTab {
 						.onClick(() => {
 							new ConfirmationModal(
 								this.app,
-								`Remove the project "${project.name || "Unnamed Novel"}"? Its files stay in your vault.`,
+								`Remove the project "${project.name || "Unnamed novel"}"? Its files stay in your vault.`,
 								() => {
 									void (async () => {
 										projects.splice(index, 1);
@@ -664,10 +676,5 @@ export class NovelChapterPluginSettingsTab extends PluginSettingTab {
 						})
 				);
 		});
-	}
-
-	// Placeholder for the fragments folder: the fallback path the plugin uses when it's empty
-	private fragmentsPlaceholder(chaptersPath: string): string {
-		return chaptersPath ? `${chaptersPath}/Fragments` : "Fragments folder (e.g., novels/my-epic-saga/fragments)";
 	}
 }

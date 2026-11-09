@@ -6,6 +6,7 @@ import {
 	isFileInFolder,
 	naturalCompare,
 	OTHER_GROUP_KEY,
+	generateId,
 	sanitizeFileName,
 	sortChapters,
 } from "./utils";
@@ -620,4 +621,19 @@ export async function createChapter(
 			"Failed to create new chapter. Check console for details.",
 		);
 	}
+}
+
+// Adds a novel project to the settings and returns it (the caller saves)
+export function addNovelProject(
+	settings: NovelChapterPluginSettings,
+	fields: { name: string; path: string; fragmentsPath: string },
+): NovelProject {
+	const project: NovelProject = {
+		id: generateId(),
+		name: fields.name.trim(),
+		path: fields.path.trim(),
+		fragmentsPath: fields.fragmentsPath.trim(),
+	};
+	settings.novelProjects.push(project);
+	return project;
 }

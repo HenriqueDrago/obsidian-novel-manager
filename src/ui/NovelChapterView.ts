@@ -1,6 +1,7 @@
 import { App, HoverPopover, ItemView, Scope, TFile, WorkspaceLeaf } from "obsidian";
 import type NovelChapterPlugin from "../main";
 import {
+	addNovelProject,
 	findProjectForFile,
 	getFragmentsPath,
 	getProjectChapters,
@@ -9,6 +10,11 @@ import {
 import { getChapterGroupKey, OTHER_GROUP_KEY } from "../core/utils";
 import { ChaptersTab } from "./ChaptersTab";
 import { FragmentsTab } from "./FragmentsTab";
+import { NewProjectModal } from "./NewProjectModal";
+import { renderEmptyState } from "./emptyState";
+
+// Dropdown value of the "New project…" entry
+const NEW_PROJECT_VALUE = "__novel-new-project__";
 
 // The view's type ID, used to register and find it
 export const VIEW_TYPE = "novel-chapter-view";
@@ -259,8 +265,11 @@ export class NovelChapterView extends ItemView {
 
 		const projects = this.plugin.settings.novelProjects;
 		if (projects.length === 0) {
-			this.projectSelectorContainer.setText(
-				"No novel projects configured. Please add one in plugin settings.",
+			renderEmptyState(
+				this.projectSelectorContainer,
+				"No novel projects yet.",
+				{ label: "New project", onClick: () => this.openNewProjectModal() },
+				{ label: "Open settings", onClick: () => this.openSettings() },
 			);
 			return;
 		}
@@ -271,15 +280,45 @@ export class NovelChapterView extends ItemView {
 		this.projectSelectEl = selectEl;
 		for (const project of projects) {
 			selectEl.createEl("option", {
-				text: project.name || "Unnamed Novel",
+				text: project.name || "Unnamed novel",
 				value: project.id,
 			});
 		}
+		// Last entry: create a project
+		selectEl.createEl("option", { text: "New project…", value: NEW_PROJECT_VALUE });
 		if (this.selectedNovelProjectId) selectEl.value = this.selectedNovelProjectId;
 
 		selectEl.addEventListener("change", () => {
+			if (selectEl.value === NEW_PROJECT_VALUE) {
+				// Back to the current project; creating one switches to it
+				if (this.selectedNovelProjectId) selectEl.value = this.selectedNovelProjectId;
+				this.openNewProjectModal();
+				return;
+			}
 			this.selectProject(selectEl.value).catch(console.error);
 		});
+	}
+
+	// Opens the new project modal; the created project is selected
+	openNewProjectModal(): void {
+		new NewProjectModal(this.app, this.plugin.settings.enableFragments, (fields) => {
+			const project = addNovelProject(this.plugin.settings, fields);
+			void (async () => {
+				await this.plugin.saveSettings(); // Redraws every view (and the settings tab, if open)
+				await this.selectProject(project.id);
+			})();
+		}).open();
+	}
+
+	// Opens Obsidian's settings on this plugin's tab (internal API, not in the public types)
+	private openSettings(): void {
+		const setting = (
+			this.app as unknown as {
+				setting?: { open(): void; openTabById?(id: string): void };
+			}
+		).setting;
+		setting?.open();
+		setting?.openTabById?.(this.plugin.manifest.id);
 	}
 
 	// Builds the tab bar (a segmented control with counts)
@@ -287,8 +326,8 @@ export class NovelChapterView extends ItemView {
 		this.tabsContainer.empty();
 		this.tabEls = {};
 
-		// Check the global setting: hide tabs if fragments are disabled
-		if (!this.plugin.settings.enableFragments) {
+		// Hide tabs if fragments are disabled, or there's no project to show
+		if (!this.plugin.settings.enableFragments || this.plugin.settings.novelProjects.length === 0) {
 			this.activeTab = "chapters";
 			this.tabsContainer.hide();
 			return;
@@ -348,8 +387,10 @@ export class NovelChapterView extends ItemView {
 	// Shows a tab and marks it active in the tab bar
 	private switchTab(tab: TabName) {
 		this.activeTab = tab;
-		this.chaptersTabContainer.toggle(tab === "chapters");
-		this.fragmentsTabContainer.toggle(tab === "fragments");
+		// No project: the selector's empty state is all there is
+		const hasProjects = this.plugin.settings.novelProjects.length > 0;
+		this.chaptersTabContainer.toggle(hasProjects && tab === "chapters");
+		this.fragmentsTabContainer.toggle(hasProjects && tab === "fragments");
 		for (const [name, els] of Object.entries(this.tabEls)) {
 			const isActive = name === tab;
 			els.tabEl.toggleClass("is-active", isActive);

@@ -231,7 +231,7 @@
 
 /* Scrolled-to rows stop below both sticky headers */
 .novel-chapter-table tr.chapter-data-row {
-	scroll-margin-top: calc(var(--novel-thead-height, 0px) + 3.5em);
+	scroll-margin-top: calc(var(--novel-thead-height, 0px) + 5em); /* Group headers are two lines now */
 }
 
 /* The open chapter's row, or its group header when the group is collapsed */
@@ -450,6 +450,23 @@
 	box-sizing: border-box;
 }
 
+/* One labeled field per input: small label above, input below */
+.novel-project-field {
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-2-1);
+	text-align: left;
+}
+.novel-project-field-label {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+}
+/* Fragments folder while fragments are off: visible, but faded and inactive */
+.novel-project-field.is-disabled {
+	opacity: 0.5;
+	pointer-events: none; /* No click, focus or hover effects on the label or input */
+}
+
 /* Neutral note under a folder path that doesn't exist yet */
 .novel-path-note {
 	color: var(--text-muted);
@@ -549,15 +566,22 @@
 }
 
 /* ====== Progress summaries (group headers and the property column header) ====== */
-.chapter-group-header-content,
-.novel-column-header-content {
+/* Group header: title line (icon + name), then the stats line */
+.chapter-group-header-content {
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-2-1);
+	min-width: 0;
+}
+.chapter-group-title {
 	display: flex;
 	align-items: center;
 	gap: var(--size-4-1);
 	min-width: 0;
 }
-.novel-column-header-content {
-	flex-wrap: wrap; /* The property column can be narrow */
+/* Stats line under the name, lined up with it (past the toggle icon) */
+.chapter-group-header-content .novel-stats-line {
+	padding-left: calc(var(--icon-size) + var(--size-4-1));
 }
 .novel-progress {
 	margin-left: auto;
@@ -612,10 +636,6 @@
 	white-space: nowrap;
 	font-variant-numeric: tabular-nums; /* Numbers line up down the column */
 }
-/* In the column header, right after "Chapter (N)" */
-.novel-chapter-table th .novel-word-count {
-	margin-left: var(--size-4-1);
-}
 /* In rows: link on the left (may wrap), count on the right */
 .novel-chapter-cell-content {
 	display: flex;
@@ -625,4 +645,65 @@
 }
 .novel-chapter-cell-content .novel-word-count {
 	margin-left: auto;
+}
+
+/* Group header: the name is cut with "…" so the count and summaries stay on one line */
+.chapter-group-name {
+	min-width: 3em; /* Never squeezed away entirely */
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+/* Stats line under the column titles and each group name: count · words, progress on the right */
+.novel-stats-line {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap; /* Progress drops below the counts when space runs out */
+	gap: var(--size-2-1) var(--size-4-2);
+	min-width: 0;
+	font-size: var(--font-ui-smaller);
+	font-weight: var(--font-normal);
+	color: var(--text-muted);
+	white-space: nowrap;
+}
+.novel-stats-line .novel-word-count {
+	font-size: inherit; /* Same size as the count next to it */
+}
+
+/* Project stats row: sticks right under the column titles */
+.novel-chapter-table thead tr.novel-summary-row th {
+	top: calc(var(--novel-header-row-height, 0px) - 1px);
+	padding-top: var(--size-2-2);
+	padding-bottom: var(--size-2-3);
+}
+/* The titles row loses its divider; the stats row draws it */
+.novel-chapter-table thead tr:first-child th {
+	border-bottom: none;
+	padding-bottom: 0;
+}
+
+/* Selected + open chapter: keep the accent bar inside the focus ring */
+.novel-chapter-table-container:focus-within tr.is-selected.is-active-chapter td:first-child,
+.novel-chapter-table-container:focus-within tr.is-selected.has-active-chapter td:first-child {
+	box-shadow:
+		inset 3px 0 0 var(--interactive-accent),
+		inset 2px 0 0 var(--novel-focus-ring),
+		inset 0 2px 0 var(--novel-focus-ring),
+		inset 0 -2px 0 var(--novel-focus-ring);
+}
+/* During a drag, the drop target outline wins over the focus ring */
+.novel-chapter-table-container:focus-within tr.chapter-group-header.is-selected.is-drop-target td {
+	box-shadow: inset 0 0 0 2px var(--interactive-accent);
+}
+
+/* Settings that can't apply right now (their parent toggle is off): faded, still visible */
+.setting-item.novel-setting-disabled .setting-item-info {
+	opacity: 0.5;
+}
+
+/* Secondary action in an empty state ("Open settings") */
+.novel-empty-state-link {
+	font-size: var(--font-ui-small);
+	font-style: normal; /* The empty state's text is italic */
+	color: var(--text-muted);
 }

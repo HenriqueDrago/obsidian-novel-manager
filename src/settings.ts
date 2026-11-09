@@ -6,6 +6,15 @@ import {
 	PropertyTypeSetting,
 } from "./core/property";
 import { generateId } from "./core/utils";
+import {
+	DEFAULT_WORDS_PER_PAGE,
+	WORD_COUNT_FORMATS,
+	WORD_COUNT_GRANULARITIES,
+	WORD_COUNT_UNITS,
+	WordCountFormat,
+	WordCountGranularity,
+	WordCountUnit,
+} from "./core/wordCount";
 import { FRAGMENT_SORTS, FragmentSort } from "./core/chapters";
 
 // Interface for a single novel project configuration
@@ -36,6 +45,12 @@ export interface NovelChapterPluginSettings {
 	dragToMove: boolean; // Drag chapter rows onto another group to move them (desktop)
 	revealInFileMenu: boolean; // "Reveal in Novel Manager" in Obsidian's file menus
 	keyboardNavigation: boolean; // Arrow keys, Enter, F2, Delete in the chapter table
+	showWordCounts: boolean; // Word counts in the table (reads chapter files)
+	wordCountGranularity: WordCountGranularity; // Per chapter too, or only groups and total
+	wordCountFormat: WordCountFormat; // "3.9K" or "3,912"
+	wordCountStartMarker: string; // Count only after the first occurrence of this text ("" = all)
+	wordCountUnit: WordCountUnit; // Words, characters, or pages (words / wordsPerPage)
+	wordsPerPage: number; // Words in a page, for the pages unit
 }
 
 // Define the default settings
@@ -64,6 +79,12 @@ export const DEFAULT_SETTINGS: NovelChapterPluginSettings = {
 	dragToMove: true,
 	revealInFileMenu: true,
 	keyboardNavigation: false,
+	showWordCounts: false,
+	wordCountGranularity: "chapters",
+	wordCountFormat: "short",
+	wordCountStartMarker: "",
+	wordCountUnit: "words",
+	wordsPerPage: DEFAULT_WORDS_PER_PAGE,
 };
 
 // Settings plus internal state that isn't shown in the settings tab
@@ -120,6 +141,28 @@ export function normalizeSettings(
 	}
 	if (typeof settings.keyboardNavigation !== "boolean") {
 		settings.keyboardNavigation = false;
+	}
+	if (typeof settings.showWordCounts !== "boolean") {
+		settings.showWordCounts = false;
+	}
+	if (!WORD_COUNT_GRANULARITIES.includes(settings.wordCountGranularity)) {
+		settings.wordCountGranularity = "chapters";
+	}
+	if (!WORD_COUNT_FORMATS.includes(settings.wordCountFormat)) {
+		settings.wordCountFormat = "short";
+	}
+	if (typeof settings.wordCountStartMarker !== "string") {
+		settings.wordCountStartMarker = "";
+	}
+	if (!WORD_COUNT_UNITS.includes(settings.wordCountUnit)) {
+		settings.wordCountUnit = "words";
+	}
+	if (
+		typeof settings.wordsPerPage !== "number" ||
+		!Number.isFinite(settings.wordsPerPage) ||
+		settings.wordsPerPage <= 0
+	) {
+		settings.wordsPerPage = DEFAULT_WORDS_PER_PAGE;
 	}
 	if (!FRAGMENT_SORTS.includes(settings.fragmentSort)) {
 		settings.fragmentSort = "newest";

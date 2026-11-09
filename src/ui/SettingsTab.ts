@@ -1,9 +1,24 @@
 // The plugin's settings screen.
-import { App, normalizePath, PluginSettingTab, Setting, TextComponent, TFile, TFolder } from "obsidian";
+import {
+	App,
+	DropdownComponent,
+	normalizePath,
+	PluginSettingTab,
+	Setting,
+	TextComponent,
+	TFile,
+	TFolder,
+} from "obsidian";
 import type NovelChapterPlugin from "../main";
 import { DEFAULT_SETTINGS } from "../settings";
 import { generateId } from "../core/utils";
 import { buildOptions, OptionProgressText, PropertyTypeSetting } from "../core/property";
+import {
+	DEFAULT_WORDS_PER_PAGE,
+	WordCountFormat,
+	WordCountGranularity,
+	WordCountUnit,
+} from "../core/wordCount";
 import { ConfirmationModal } from "./ConfirmationModal";
 import { FileSuggest, FolderSuggest } from "./suggest";
 
@@ -91,6 +106,9 @@ export class NovelChapterPluginSettingsTab extends PluginSettingTab {
 					})
 			);
 
+		// ====== Chapter list ======
+		new Setting(containerEl).setName("Chapter list").setHeading();
+
 		// Create setting for following the open chapter's project
 		new Setting(containerEl)
 			.setName("Follow the open chapter")
@@ -101,6 +119,21 @@ export class NovelChapterPluginSettingsTab extends PluginSettingTab {
 					.onChange(async (value) => {
 						this.plugin.settings.followActiveChapter = value;
 						await this.plugin.saveSettings();
+					})
+			);
+
+		// Create setting for keyboard navigation in the chapter table
+		new Setting(containerEl)
+			.setName("Keyboard navigation")
+			.setDesc(
+				"Move through the chapter list with the arrow keys. Enter opens a chapter, space changes its property, F2 renames, the delete key deletes, and left and right collapse or expand groups or step into the property cell."
+			)
+			.addToggle((toggle) =>
+				toggle
+					.setValue(this.plugin.settings.keyboardNavigation)
+					.onChange(async (value) => {
+						this.plugin.settings.keyboardNavigation = value;
+						await this.plugin.saveSettings(); // Redraws the table with or without focus support
 					})
 			);
 
@@ -134,20 +167,115 @@ export class NovelChapterPluginSettingsTab extends PluginSettingTab {
 					})
 			);
 
-		// Create setting for keyboard navigation in the chapter table
+		// ====== Word counts ======
+		new Setting(containerEl).setName("Word counts").setHeading();
+
+		// Create settings for word counts (the rest only matter while they're on)
+		const wordCountControls: (DropdownComponent | TextComponent)[] = [];
+		let wordsPerPageInput: TextComponent | null = null; // Only matters for the pages unit
+		const updateWordCountControls = () => {
+			const { showWordCounts, wordCountUnit } = this.plugin.settings;
+			for (const control of wordCountControls) control.setDisabled(!showWordCounts);
+			wordsPerPageInput?.setDisabled(!showWordCounts || wordCountUnit !== "pages");
+		};
 		new Setting(containerEl)
-			.setName("Keyboard navigation")
-			.setDesc(
-				"Move through the chapter list with the arrow keys. Enter opens a chapter, space changes its property, F2 renames, the delete key deletes, and left and right collapse or expand groups or step into the property cell."
-			)
+			.setName("Show word counts")
+			.setDesc("Count the words, characters or pages of each chapter. Reads chapter files, so it's off by default.")
 			.addToggle((toggle) =>
 				toggle
-					.setValue(this.plugin.settings.keyboardNavigation)
+					.setValue(this.plugin.settings.showWordCounts)
 					.onChange(async (value) => {
-						this.plugin.settings.keyboardNavigation = value;
-						await this.plugin.saveSettings(); // Redraws the table with or without focus support
+						this.plugin.settings.showWordCounts = value;
+						updateWordCountControls();
+						await this.plugin.saveSettings();
 					})
 			);
+		new Setting(containerEl)
+			.setName("Count")
+			.setDesc("What to count. Characters leave out markdown and count spaces between words.")
+			.addDropdown((dropdown) => {
+				wordCountControls.push(dropdown);
+				dropdown
+					.addOptions({
+						words: "Words",
+						characters: "Characters",
+						pages: "Pages",
+					})
+					.setValue(this.plugin.settings.wordCountUnit)
+					.onChange(async (value) => {
+						this.plugin.settings.wordCountUnit = value as WordCountUnit;
+						updateWordCountControls();
+						await this.plugin.saveSettings();
+					});
+			});
+		new Setting(containerEl)
+			.setName("Words per page")
+			.setDesc("How many words make a page, for counting pages.")
+			.addText((text) => {
+				wordsPerPageInput = text;
+				text.inputEl.type = "number";
+				text.inputEl.min = "1";
+				text
+					.setPlaceholder(String(DEFAULT_WORDS_PER_PAGE))
+					.setValue(String(this.plugin.settings.wordsPerPage))
+					.onChange((value) => {
+						const wordsPerPage = Number(value);
+						// Ignore empty or invalid input until it's a positive number
+						if (!Number.isFinite(wordsPerPage) || wordsPerPage <= 0) return;
+						this.plugin.settings.wordsPerPage = wordsPerPage;
+						this.plugin.saveSettingsDebounced();
+					});
+			});
+		new Setting(containerEl)
+			.setName("Word count detail")
+			.setDesc("Where word counts show. Group and project totals always show.")
+			.addDropdown((dropdown) => {
+				wordCountControls.push(dropdown);
+				dropdown
+					.addOptions({
+						chapters: "Chapters, groups and total",
+						groups: "Groups and total only",
+					})
+					.setValue(this.plugin.settings.wordCountGranularity)
+					.onChange(async (value) => {
+						this.plugin.settings.wordCountGranularity = value as WordCountGranularity;
+						await this.plugin.saveSettings();
+					});
+			});
+		new Setting(containerEl)
+			.setName("Word count format")
+			.setDesc("Short numbers are rounded; hover one for the exact count. Pages always show one decimal.")
+			.addDropdown((dropdown) => {
+				wordCountControls.push(dropdown);
+				dropdown
+					.addOptions({
+						short: "Short (3.9K)",
+						exact: "Exact (3,912)",
+					})
+					.setValue(this.plugin.settings.wordCountFormat)
+					.onChange(async (value) => {
+						this.plugin.settings.wordCountFormat = value as WordCountFormat;
+						await this.plugin.saveSettings();
+					});
+			});
+		new Setting(containerEl)
+			.setName("Start counting after")
+			.setDesc(
+				"Only count the words after the first occurrence of this text in a chapter (e.g., a heading or a line like %%start%%). Chapters without it are counted whole. Leave empty to count everything."
+			)
+			.addText((text) => {
+				wordCountControls.push(text);
+				text
+					.setPlaceholder("E.g., %%start%%")
+					.setValue(this.plugin.settings.wordCountStartMarker)
+					.onChange((value) => {
+						// Not trimmed: spaces or line breaks can be part of the marker
+						this.plugin.settings.wordCountStartMarker = value;
+						this.plugin.saveSettingsDebounced(); // Counts are cached per marker, so this recounts
+					});
+			});
+
+		updateWordCountControls(); // Initial disabled state
 
 		// ====== Property column ======
 		new Setting(containerEl).setName("Property column").setHeading();
@@ -375,7 +503,8 @@ export class NovelChapterPluginSettingsTab extends PluginSettingTab {
 					})
 			);
 
-		// Create settings for the progress summaries on group headers
+		// Progress summaries on group headers (only with the property column)
+		new Setting(containerEl).setName("Progress").setHeading();
 		new Setting(containerEl)
 			.setName("Show checkbox progress")
 			.setDesc("Show how many chapters are checked on each group header (checkbox type).")

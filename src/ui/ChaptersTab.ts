@@ -45,6 +45,7 @@ import type { TabContext } from "./NovelChapterView";
 import { renderPropertyCheckbox, renderPropertyDropdown } from "./PropertyCell";
 import { renderEmptyState } from "./emptyState";
 import { renderCheckboxProgress, renderOptionProgress } from "./ProgressSummary";
+import { countInUnit, formatWordCount, TextCounts, unitLabel } from "../core/wordCount";
 
 // Filter values for the checkbox property type
 const FILTER_CHECKED = "__novel-manager-checked__";
@@ -74,6 +75,11 @@ export class ChaptersTab {
 	// Drag to move: the chapter being dragged and the group highlighted as the drop target
 	private draggedFile: TFile | null = null;
 	private dropTargetKey: string | null = null;
+
+	// Word counts: the spans of this render, filled in place once the counts are ready
+	private wordCountRows: { el: HTMLElement; file: TFile }[] = [];
+	private wordCountTotals: { el: HTMLElement; files: TFile[]; withUnit: boolean }[] = [];
+	private renderToken = 0; // Counts finishing after a newer render are ignored
 
 	// Keyboard navigation: the selected item, "row:<path>" or "group:<key>"
 	private selectedId: string | null = null;
@@ -309,6 +315,9 @@ export class ChaptersTab {
 		this.rowsByGroupKey.clear();
 		this.draggedFile = null; // A redraw mid-drag drops the old rows
 		this.dropTargetKey = null;
+		this.wordCountRows = [];
+		this.wordCountTotals = [];
+		const renderToken = ++this.renderToken;
 		this.theadObserver?.disconnect();
 		this.theadObserver = null;
 
@@ -511,7 +520,19 @@ export class ChaptersTab {
 		// Render Table Header with new total count
 		const thead = table.createEl("thead");
 		const headerRow = thead.createEl("tr");
-		headerRow.createEl("th", { text: `Chapter (${totalCount})` });
+		// Chapters counted in the totals (the progress summary uses the same ones)
+		const totalFiles = this.plugin.settings.excludeOtherFromCount
+			? groups.filter((g) => g.key !== OTHER_GROUP_KEY).flatMap((g) => g.files)
+			: groups.flatMap((g) => g.files);
+		const { showWordCounts, wordCountGranularity } = this.plugin.settings;
+		const chapterTh = headerRow.createEl("th", { text: `Chapter (${totalCount})` });
+		if (showWordCounts) {
+			this.wordCountTotals.push({
+				el: chapterTh.createSpan({ cls: "novel-word-count" }),
+				files: totalFiles,
+				withUnit: true, // "86.2K words" in the column header
+			});
+		}
 		if (showPropertyColumn) {
 			const propertyHeader =
 				propertyColumnHeader.trim() || propertyNameToChange;
@@ -519,12 +540,7 @@ export class ChaptersTab {
 			const propertyThContent = propertyTh.createDiv({ cls: "novel-column-header-content" });
 			propertyThContent.createSpan({ text: propertyHeader });
 			// Whole project, the same chapters as the total count
-			renderProgress(
-				propertyThContent,
-				this.plugin.settings.excludeOtherFromCount
-					? groups.filter((g) => g.key !== OTHER_GROUP_KEY).flatMap((g) => g.files)
-					: groups.flatMap((g) => g.files),
-			);
+			renderProgress(propertyThContent, totalFiles);
 		}
 
 		// Group headers stick right below the column header, so track its height
@@ -582,6 +598,13 @@ export class ChaptersTab {
 			groupHeaderContent.createSpan({
 				text: `${group.name} (${group.files.length})`,
 			});
+			if (showWordCounts && group.files.length > 0) {
+				this.wordCountTotals.push({
+					el: groupHeaderContent.createSpan({ cls: "novel-word-count" }),
+					files: group.files,
+					withUnit: false,
+				});
+			}
 			renderProgress(groupHeaderContent, group.files);
 
 			// Clicking the header collapses or expands the group
@@ -607,11 +630,22 @@ export class ChaptersTab {
 				if (startCollapsed) row.hide();
 
 				const chapterCell = row.createEl("td");
-				const chapterLink = chapterCell.createEl("a", {
+				const showRowCount = showWordCounts && wordCountGranularity === "chapters";
+				// With a word count, link and count share a flex row (count on the right)
+				const linkParent = showRowCount
+					? chapterCell.createDiv({ cls: "novel-chapter-cell-content" })
+					: chapterCell;
+				const chapterLink = linkParent.createEl("a", {
 					text: file.basename,
 					href: "#",
 					cls: "internal-link",
 				});
+				if (showRowCount) {
+					this.wordCountRows.push({
+						el: linkParent.createSpan({ cls: "novel-word-count" }),
+						file,
+					});
+				}
 
 				if (canDrag) {
 					row.draggable = true;
@@ -705,6 +739,64 @@ export class ChaptersTab {
 		}
 
 		this.highlightActiveChapter(false); // No scrolling on plain refreshes
+
+		// Show what's counted, then count the rest in the background and fill in place
+		if (showWordCounts) {
+			this.fillWordCounts();
+			const cache = this.plugin.wordCounts;
+			const missing = groups.flatMap((g) => g.files).filter((file) => cache.get(file) === undefined);
+			if (missing.length > 0) {
+				cache
+					.compute(missing)
+					.then(() => {
+						if (renderToken === this.renderToken) this.fillWordCounts();
+					})
+					.catch(console.error);
+			}
+		}
+	}
+
+	// Writes the word counts from the cache; "…" for anything never counted
+	private fillWordCounts(): void {
+		const { wordCountFormat, wordCountUnit, wordsPerPage } = this.plugin.settings;
+		const cache = this.plugin.wordCounts;
+		const show = (el: HTMLElement, counts: TextCounts | undefined, prefix: string, withUnit: boolean) => {
+			if (!counts) {
+				el.setText(`${prefix}…`);
+				el.setAttr("aria-label", "Counting…");
+				return;
+			}
+			const value = countInUnit(counts, wordCountUnit, wordsPerPage);
+			const unit = withUnit ? ` ${unitLabel(value, wordCountUnit)}` : "";
+			el.setText(`${prefix}${formatWordCount(value, wordCountFormat, wordCountUnit)}${unit}`);
+			// Exact numbers on hover; pages also show the words they come from
+			const exact = `${value.toLocaleString(undefined, { maximumFractionDigits: 1 })} ${unitLabel(value, wordCountUnit)}`;
+			el.setAttr(
+				"aria-label",
+				wordCountUnit === "pages"
+					? `${exact} · ${counts.words.toLocaleString()} ${unitLabel(counts.words, "words")}`
+					: exact,
+			);
+		};
+		// The last known count stays up while a changed chapter is recounted
+		for (const { el, file } of this.wordCountRows) {
+			show(el, cache.getLatest(file), "", false);
+		}
+		for (const { el, files, withUnit } of this.wordCountTotals) {
+			// Sums words and characters, so pages are counted from the total (no rounding drift)
+			const sum: TextCounts = { words: 0, characters: 0 };
+			let complete = true;
+			for (const file of files) {
+				const counts = cache.getLatest(file);
+				if (!counts) {
+					complete = false;
+					break;
+				}
+				sum.words += counts.words;
+				sum.characters += counts.characters;
+			}
+			show(el, complete ? sum : undefined, "· ", withUnit);
+		}
 	}
 
 	// Makes a group header or row accept dropped chapters, moving them into that group's folder

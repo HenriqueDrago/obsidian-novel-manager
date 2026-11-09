@@ -9,10 +9,13 @@ import {
 import { promptAndCreateNewChapter } from "./ui/chapterPrompts";
 import { NovelChapterPluginSettingsTab } from "./ui/SettingsTab";
 import { NovelChapterView, VIEW_TYPE } from "./ui/NovelChapterView";
+import { WordCountCache } from "./core/WordCountCache";
 
 // Main plugin class
 export default class NovelChapterPlugin extends Plugin {
 	settings!: InternalNovelChapterPluginSettings; // Plugin settings
+	// Shared by every view, survives redraws; settings are read lazily (loaded in onload)
+	wordCounts = new WordCountCache(this.app, () => this.settings.wordCountStartMarker);
 
 	// Method to activate the Novel Chapter view
 	async onload() {
@@ -176,12 +179,14 @@ export default class NovelChapterPlugin extends Plugin {
 		);
 		this.registerEvent(
 			this.app.vault.on("delete", (file) => {
+				this.wordCounts.delete(file.path);
 				this.handleFileChange(file);
 			}),
 		);
 		this.registerEvent(
 			this.app.vault.on("rename", (file, oldPath) => {
 				// Pass oldPath so moving a chapter *out* of a project still refreshes
+				this.wordCounts.rename(oldPath, file.path); // A missed one (e.g. inside a renamed folder) just gets recounted
 				this.handleFileChange(file, oldPath);
 			}),
 		);
